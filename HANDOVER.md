@@ -19,6 +19,7 @@ Chat UI ── useSunny ─┬─ scripted mode: intents.ts → engine.reduce (n
                         (re-validates effects; calc.ts does all maths)
 ```
 
+- **Hosting:** `server/prod.ts` is a small Node server for production (Render). It serves `dist/` (with a single-page-app fallback and a path-traversal guard) and the same `/api/sunny/*` handlers, plus a per-client rate limit (30 chat turns per 10 minutes by default). It runs with Node's built-in TypeScript type stripping, which is why `tsconfig` sets `erasableSyntaxOnly` and `verbatimModuleSyntax` and server-side imports use `.ts` extensions. Deployment is described in `render.yaml` and the README.
 - `server/vitePlugin.ts` mounts `/api/sunny/status` and `/api/sunny/chat` into `npm run dev` and `npm run preview`. No separate server process is needed. The handlers in `server/http.ts` are framework-free, so they could move to Express or a serverless function.
 - Config comes from `vite.config.ts` → `loadEnv` → plugin, and stays server-side: `GEMINI_API_KEY` and `GEMINI_MODEL` (default `gemini-3.5-flash-lite`). `OPENAI_*` is no longer used, and the `openai` package was removed.
 - `server/chat.ts` is provider-neutral (`ModelClient`, `ModelRequest`, `ModelResult`). `server/geminiClient.ts` is the only provider-specific file; another provider would need only a new adapter.

@@ -15,6 +15,31 @@ export interface ServerConfig {
   verify: (apiKey: string, model: string) => Promise<{ ok: boolean; message: string }>;
   /** Overall per-turn deadline (all tool rounds). */
   turnTimeoutMs?: number;
+  /** Optional per-client limit on chat requests (used by the hosted server to protect free-tier quota). */
+  rateLimit?: { windowMs: number; max: number };
+}
+
+/** Sliding-window request limiter keyed by client address. In memory; fine for a single small instance. */
+export function createRateLimiter(windowMs: number, max: number, now: () => number = Date.now) {
+  const hits = new Map<string, number[]>();
+  return (key: string): boolean => {
+    const t = now();
+    const recent = (hits.get(key) ?? []).filter((h) => t - h < windowMs);
+    if (recent.length >= max) {
+      hits.set(key, recent);
+      return false;
+    }
+    recent.push(t);
+    hits.set(key, recent);
+    if (hits.size > 5000) hits.clear();
+    return true;
+  };
+}
+
+function clientKey(req: IncomingMessage): string {
+  const fwd = req.headers['x-forwarded-for'];
+  const first = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(',')[0]?.trim();
+  return first || req.socket.remoteAddress || 'unknown';
 }
 
 interface Result {
@@ -103,6 +128,8 @@ function send(res: ServerResponse, r: Result) {
 
 /** Connect-style middleware for Vite. */
 export function sunnyMiddleware(getConfig: () => ServerConfig) {
+  const limits = getConfig().rateLimit;
+  const allow = limits ? createRateLimiter(limits.windowMs, limits.max) : () => true;
   return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (!url.pathname.startsWith('/api/sunny/')) return next();
@@ -111,6 +138,12 @@ export function sunnyMiddleware(getConfig: () => ServerConfig) {
         return send(res, await handleStatus(getConfig(), url.searchParams.get('verify') === '1'));
       }
       if (url.pathname === '/api/sunny/chat' && req.method === 'POST') {
+        if (!allow(clientKey(req))) {
+          return send(
+            res,
+            errorResult('rate_limited', 'You’ve sent a lot of messages in a short time. Please wait a few minutes and try again (this protects the shared free-tier quota).'),
+          );
+        }
         const closed = new AbortController();
         res.on('close', () => {
           if (!res.writableEnded) closed.abort();

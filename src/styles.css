@@ -184,6 +184,9 @@ textarea {
   color: var(--ink-soft);
   cursor: pointer;
 }
+.settings-button {
+  text-decoration: none;
+}
 .settings-button:hover {
   border-color: var(--line);
   color: var(--charcoal);

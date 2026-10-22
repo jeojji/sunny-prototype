@@ -39,6 +39,25 @@ Without an API key, Sunny runs in **scripted demo mode**. A "Scripted demo" labe
 
 **Where the key lives.** Only in `.env.local` (git-ignored, readable only by your user), which the local server process reads. The browser calls `/api/sunny/*` and never receives the key. The variable is not `VITE_`-prefixed, so Vite never bundles it. I verified that neither the real key nor the SDK appears in `dist/` or the server logs, and the app never logs the key or provider error details.
 
+## Share it with teammates (hosted on Render, free)
+
+The repo includes a `render.yaml` Blueprint that deploys Sunny as **one free web service** (frontend + API) with live Gemini.
+
+1. Sign in at https://dashboard.render.com (signing in with GitHub is easiest).
+2. Click **New → Blueprint**, connect GitHub if asked, and pick the **jeojji/sunny-prototype** repo.
+3. When it asks for `GEMINI_API_KEY`, paste your Google AI Studio key. It's stored as a secret in Render, not in the repo.
+4. Click **Apply** / **Deploy**. The first build takes a few minutes. Your link will look like `https://sunny-prototype-xxxx.onrender.com`; share that with your team.
+
+If Blueprints aren't available on your account, use **New → Web Service → Public Git Repository** with `https://github.com/jeojji/sunny-prototype` instead. Set build command `npm ci && npm run build`, start command `npm start` and instance type **Free**, and add the environment variables `GEMINI_API_KEY` (your key), `GEMINI_MODEL=gemini-3.5-flash-lite` and `NODE_VERSION=24`.
+
+**Good to know**
+- Free Render services go to sleep after 15 minutes without visits. The next visit takes about a minute to wake up, so open the link a minute before a demo.
+- Everyone shares your Gemini free-tier quota. The hosted server allows each device up to 30 messages per 10 minutes (`SUNNY_RATE_LIMIT_MAX` changes this). If Gemini's limit is reached, Sunny says so and offers **Try again**.
+- Pushing to `main` redeploys automatically.
+- To run the hosted version locally: `npm run build && npm start`, then open http://localhost:3000.
+
+**Feedback.** The **Give feedback** link in the header opens a GitHub issue with a short template (what you tried, what Sunny did, what worked, what felt off). Teammates need a GitHub account. You'll see all feedback under the repo's **Issues** tab.
+
 ## Commands
 
 | Command | What it does |
@@ -46,6 +65,7 @@ Without an API key, Sunny runs in **scripted demo mode**. A "Scripted demo" labe
 | `npm run dev` | App and local API at http://localhost:5173 |
 | `npm run build` | Type-check, then build the frontend to `dist/` |
 | `npm run preview` | Serve the build *with* the local API at http://localhost:4173 |
+| `npm start` | Production server (after `npm run build`): app + API at http://localhost:3000, as on Render |
 | `npm run ai:check` | Report whether Gemini is configured and the model is reachable (no generation) |
 | `npm test` | All tests (Vitest; model responses are mocked) |
 | `npm run lint` / `npm run typecheck` | ESLint / TypeScript |
@@ -77,9 +97,9 @@ See `DEMO_SCRIPT.md` for the 2–3-minute story. Things to try in either mode: "
 
 ## Tests
 
-`npm test` runs 76 automated tests with **mocked** model responses (no network):
+`npm test` runs 78 automated tests with **mocked** model responses (no network):
 - `server/geminiClient.test.ts` (9): Gemini request mapping (free-tier default model, `store: false`, no service tier, system instruction separate from reference context, function tools, function-result steps, `tool_choice: 'none'` when forcing an answer), retries disabled, abort signal passed, and error mapping for quota (429), invalid key, missing model, high demand (503), timeout and connection failures.
-- `server/chat.test.ts` (26): missing key, verify failure, provider errors, timeouts (including a client that ignores aborts), request limits, unreadable output, tool-loop limit, source-id validation, instruction/customer separation, snapshot privacy, permission/summary/support guards, grounded and derived fact updates, paraphrased quotes, negatives, over-balance clarification, deterministic and hypothetical calculations, and the dollar-figure check.
+- `server/chat.test.ts` (28): missing key, verify failure, provider errors, timeouts (including a client that ignores aborts), request limits, unreadable output, tool-loop limit, source-id validation, instruction/customer separation, snapshot privacy, permission/summary/support guards, grounded and derived fact updates, paraphrased quotes, negatives, over-balance clarification, deterministic and hypothetical calculations, the dollar-figure check, inline-citation cleanup and the hosted rate limit.
 - `src/conversation/engine.test.ts` (24), `src/App.test.tsx` (6), `src/lib/*.test.ts` (11): conversation logic, UI flows, calculation and parsing.
 
 **Live Gemini testing (2026-10-21, gemini-3.5-flash-lite, real key).** I ran these through the real local API and in Chrome at desktop and mobile sizes:

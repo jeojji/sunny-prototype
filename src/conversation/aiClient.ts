@@ -6,11 +6,10 @@ import { LIMITS, type AiErrorCode, type ChatRequest, type ChatResponse, type Sta
 import type { ConversationState } from './types';
 
 export class AiRequestError extends Error {
-  constructor(
-    public code: AiErrorCode,
-    message: string,
-  ) {
+  code: AiErrorCode;
+  constructor(code: AiErrorCode, message: string) {
     super(message);
+    this.code = code;
   }
 }
 

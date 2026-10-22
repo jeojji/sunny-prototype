@@ -354,3 +354,23 @@ describe('quote grounding tolerance (found in live testing)', () => {
     expect(quoteSupported('800 a month', latest)).toBe(false);
   });
 });
+
+describe('hosted rate limit', () => {
+  it('allows up to the limit per client within the window, then recovers', async () => {
+    const { createRateLimiter } = await import('./http');
+    let t = 0;
+    const allow = createRateLimiter(1000, 2, () => t);
+    expect([allow('a'), allow('a'), allow('a'), allow('b')]).toEqual([true, true, false, true]);
+    t = 1001;
+    expect(allow('a')).toBe(true);
+  });
+});
+
+describe('inline citation cleanup', () => {
+  it('removes source-id markers but keeps normal brackets', async () => {
+    const { stripInlineCitations } = await import('./chat');
+    expect(stripInlineCitations('A GIC is secured [cdic-gic]. It is locked in [tng-gic, cdic-coverage].')).toBe('A GIC is secured. It is locked in.');
+    expect(stripInlineCitations('Contributions (source: gov-tfsa) are not deductible.')).toBe('Contributions are not deductible.');
+    expect(stripInlineCitations('Closing costs (about 1.5% to 4%) apply.')).toBe('Closing costs (about 1.5% to 4%) apply.');
+  });
+});

@@ -1,3 +1,6 @@
+/** Team feedback goes to a GitHub issue using .github/ISSUE_TEMPLATE/feedback.md. */
+const FEEDBACK_URL = 'https://github.com/jeojji/sunny-prototype/issues/new?template=feedback.md';
+
 interface Props {
   onOpenSettings: () => void;
   onHome?: () => void;
@@ -21,6 +24,12 @@ export function Header({ onOpenSettings, onHome }: Props) {
         </div>
         <div className="header-actions">
           <span className="prototype-label">Academic prototype · Synthetic data</span>
+          <a className="settings-button" href={FEEDBACK_URL} target="_blank" rel="noreferrer">
+            <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16">
+              <path fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" d="M4 5h16v11H9l-5 4z" />
+            </svg>
+            <span>Give feedback</span>
+          </a>
           <button type="button" className="settings-button" onClick={onOpenSettings} aria-haspopup="dialog">
             <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16">
               <path

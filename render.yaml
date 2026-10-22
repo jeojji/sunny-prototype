@@ -1,0 +1,17 @@
+# Render Blueprint: deploys Sunny as one free web service (frontend + API).
+# On first deploy Render asks for GEMINI_API_KEY (sync: false = secret, entered in the dashboard).
+services:
+  - type: web
+    name: sunny-prototype
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/sunny/status
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash-lite
+      - key: NODE_VERSION
+        value: "24"

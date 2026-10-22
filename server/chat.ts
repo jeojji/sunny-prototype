@@ -52,11 +52,10 @@ export interface ModelClient {
 }
 
 export class AiError extends Error {
-  constructor(
-    public code: AiErrorCode,
-    message: string,
-  ) {
+  code: AiErrorCode;
+  constructor(code: AiErrorCode, message: string) {
     super(message);
+    this.code = code;
   }
 }
 
@@ -162,6 +161,14 @@ export function unsupportedFigures(reply: string, allowed: Set<number>): number[
   return dollarFigures(reply).filter((n) => !allowed.has(n));
 }
 
+/** Remove inline citation markers like "[cdic-gic]" or "(source: tng-gic)"; sources are shown separately. */
+export function stripInlineCitations(text: string): string {
+  return text
+    .replace(/\s*[[(](?:sources?:\s*)?(?:[a-z]{2,6}-[a-z0-9-]+)(?:\s*,\s*[a-z]{2,6}-[a-z0-9-]+)*[\])]/gi, '')
+    .replace(/[ \t]+([.,;:!?])/g, '$1')
+    .trim();
+}
+
 /** Opt-in diagnostics (SUNNY_DEBUG_TOOLS=1): tool names and statuses only, never content or keys. */
 function debugLog(round: number, entries: string[]) {
   if (typeof process !== 'undefined' && process.env?.SUNNY_DEBUG_TOOLS === '1') console.info(`[sunny] round ${round + 1}: ${entries.join(', ')}`);
@@ -245,7 +252,7 @@ export async function runChatTurn(
         continue;
       }
       return {
-        reply: parsed.reply.trim().slice(0, LIMITS.maxReplyChars),
+        reply: stripInlineCitations(parsed.reply).slice(0, LIMITS.maxReplyChars),
         sourceIds: validateSourceIds(parsed.source_ids),
         suggestions: (Array.isArray(parsed.suggestions) ? parsed.suggestions : [])
           .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
