@@ -20,7 +20,7 @@ export async function fetchStatus(verify = false): Promise<StatusResponse> {
     if (!res.ok) throw new Error(String(res.status));
     return (await res.json()) as StatusResponse;
   } catch {
-    return { aiAvailable: false, model: null, reason: 'The local Sunny API could not be reached.' };
+    return { aiAvailable: false, model: null, reason: 'No Sunny server is available here (for example, on the static GitHub Pages demo), so live AI is off and this is the scripted demo.' };
   }
 }
 
