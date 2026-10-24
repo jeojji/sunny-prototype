@@ -6,10 +6,70 @@ import { HandoffPreview } from './components/HandoffPreview';
 import { Header } from './components/Header';
 import { SummaryView } from './components/SummaryView';
 import { fetchStatus } from './conversation/aiClient';
+import { createInitialState } from './conversation/engine';
 import { scriptedProvider } from './conversation/provider';
+import type { ConversationState, EngineMode, Memory } from './conversation/types';
 import { useSunny, type ChatFn } from './conversation/useSunny';
-import { DEFAULT_PROFILE, type CustomerProfile } from './data/customers';
+import { buildPreset, PRESETS } from './data/customers';
+import type { SignalConfig } from './domain/signal';
 import type { StatusResponse } from './shared/api';
+
+/**
+ * Demo memory is synthetic and stored only in this browser, per scenario, so a
+ * "later visit" can show continuity. Messages are never stored. Reset clears it.
+ */
+export const STORAGE_KEY = 'sunny-demo-v2';
+
+interface SavedScenario {
+  memory: Memory;
+  todayIndex: number;
+  reviewFlag: boolean;
+  historyDaysAvailable: number | null;
+}
+interface Store {
+  active: string;
+  signalConfig?: SignalConfig;
+  scenarios: Record<string, SavedScenario>;
+}
+
+function readStore(): Store {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const s = JSON.parse(raw) as Store;
+      if (s && typeof s === 'object' && s.scenarios) return s;
+    }
+  } catch {
+    // Storage unavailable (private mode etc.): the demo still works without it.
+  }
+  return { active: PRESETS[0].id, scenarios: {} };
+}
+
+function writeStore(store: Store) {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  } catch {
+    // ignore
+  }
+}
+
+function clearStore() {
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function stateFor(id: string, store: Store, mode: EngineMode): ConversationState {
+  const profile = buildPreset(id);
+  const saved = store.scenarios[id];
+  if (saved) {
+    profile.reviewFlag = saved.reviewFlag;
+    profile.historyDaysAvailable = saved.historyDaysAvailable;
+  }
+  return createInitialState(profile, { memory: saved?.memory, todayIndex: saved?.todayIndex, mode, signalConfig: store.signalConfig });
+}
 
 interface Props {
   /** Injectable for tests. */
@@ -18,9 +78,10 @@ interface Props {
 }
 
 export default function App({ chat, status = fetchStatus }: Props) {
+  const storeRef = useRef<Store>(readStore());
   const { state, send, sendText, dispatch, retry, setMode, fallbackToScripted, pendingSay, thinking, orb } = useSunny(
     scriptedProvider,
-    DEFAULT_PROFILE,
+    () => stateFor(storeRef.current.active, storeRef.current, 'scripted'),
     chat,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -28,9 +89,7 @@ export default function App({ chat, status = fetchStatus }: Props) {
   const startedRef = useRef(false);
   startedRef.current = state.messages.some((m) => m.role === 'customer');
 
-  // Check once whether live AI is configured. Start in AI mode only if it is
-  // and the customer hasn't started talking yet; otherwise the scripted demo is
-  // used and labelled as such.
+  // Live AI only if configured and the customer hasn't started talking; otherwise the labelled scripted demo.
   useEffect(() => {
     let cancelled = false;
     status().then((s) => {
@@ -43,20 +102,44 @@ export default function App({ chat, status = fetchStatus }: Props) {
     };
   }, [status, setMode]);
 
+  // Persist this scenario's synthetic memory, simulated day and demo flags.
+  useEffect(() => {
+    const store = storeRef.current;
+    store.active = state.profile.id;
+    store.signalConfig = state.signalConfig;
+    store.scenarios[state.profile.id] = {
+      memory: state.memory,
+      todayIndex: state.todayIndex,
+      reviewFlag: state.profile.reviewFlag,
+      historyDaysAvailable: state.profile.historyDaysAvailable,
+    };
+    writeStore(store);
+  }, [state.memory, state.todayIndex, state.profile, state.signalConfig]);
+
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [state.view]);
 
-  const applyProfile = useCallback(
-    (profile: CustomerProfile) => {
-      dispatch({ type: 'loadProfile', profile });
+  const loadPreset = useCallback(
+    (id: string) => {
+      const next = stateFor(id, storeRef.current, state.mode);
+      dispatch({ type: 'loadPreset', profile: next.profile, memory: next.memory, todayIndex: next.todayIndex });
       setSettingsOpen(false);
     },
-    [dispatch],
+    [dispatch, state.mode],
   );
 
-  const restartConversation = useCallback(() => {
-    dispatch({ type: 'confirmRestart' });
+  const resetCustomer = useCallback(() => {
+    delete storeRef.current.scenarios[state.profile.id];
+    dispatch({ type: 'loadPreset', profile: buildPreset(state.profile.id) });
+    setSettingsOpen(false);
+  }, [dispatch, state.profile.id]);
+
+  const resetAll = useCallback(() => {
+    clearStore();
+    storeRef.current = { active: PRESETS[0].id, scenarios: {} };
+    dispatch({ type: 'setSignalConfig', config: createInitialState(buildPreset(PRESETS[0].id)).signalConfig });
+    dispatch({ type: 'loadPreset', profile: buildPreset(PRESETS[0].id) });
     setSettingsOpen(false);
   }, [dispatch]);
 
@@ -73,16 +156,14 @@ export default function App({ chat, status = fetchStatus }: Props) {
       <a className="skip-link" href="#main">
         Skip to content
       </a>
-      <Header
-        onOpenSettings={() => setSettingsOpen(true)}
-        onHome={state.view !== 'dashboard' ? () => dispatch({ type: 'setView', view: 'dashboard' }) : undefined}
-      />
+      <Header onOpenSettings={() => setSettingsOpen(true)} onHome={state.view !== 'dashboard' ? () => dispatch({ type: 'setView', view: 'dashboard' }) : undefined} />
 
       {state.view === 'dashboard' && (
         <Dashboard
-          profile={state.profile}
-          hasConversation={state.messages.length > 0}
-          onStart={() => dispatch({ type: 'open' })}
+          state={state}
+          onOpen={(origin) => dispatch({ type: 'open', origin })}
+          onCheckin={(action) => dispatch({ type: 'checkin', action })}
+          dispatch={dispatch}
         />
       )}
       {state.view === 'chat' && (
@@ -99,31 +180,23 @@ export default function App({ chat, status = fetchStatus }: Props) {
         />
       )}
       {state.view === 'handoff' && <HandoffPreview state={state} dispatch={dispatch} />}
-      {state.view === 'summary' && (
-        <SummaryView
-          state={state}
-          dispatch={dispatch}
-          onEditAssumptions={() => {
-            if (state.mode === 'scripted') dispatch({ type: 'pickEdit' });
-            else {
-              dispatch({ type: 'setView', view: 'chat' });
-              requestAnimationFrame(() => document.getElementById('goal-panel')?.scrollIntoView());
-            }
-          }}
-          onRestart={() => dispatch({ type: 'loadProfile', profile: state.profile })}
-        />
-      )}
+      {state.view === 'summary' && <SummaryView state={state} dispatch={dispatch} onRestart={resetCustomer} />}
 
       <DemoDrawer
         open={settingsOpen}
-        profile={state.profile}
-        mode={state.mode}
+        state={state}
         aiStatus={aiStatus}
         onSetMode={(mode) => setMode(mode, true)}
         onVerify={verify}
         onClose={closeSettings}
-        onApplyProfile={applyProfile}
-        onRestartConversation={restartConversation}
+        onLoadPreset={loadPreset}
+        onResetCustomer={resetCustomer}
+        onResetAll={resetAll}
+        onLaterVisit={() => {
+          dispatch({ type: 'simulateLaterVisit', days: 30 });
+          setSettingsOpen(false);
+        }}
+        dispatch={dispatch}
       />
     </div>
   );

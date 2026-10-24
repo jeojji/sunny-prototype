@@ -127,3 +127,52 @@ export function parseAmount(raw: string): number | null {
   const value = parseFloat(match[1]) * (match[2] ? 1000 : 1);
   return isValidAmount(value) ? roundCents(value) : null;
 }
+
+export interface ProjectionInput {
+  start: number;
+  monthly: number;
+  months: number;
+  /** Optional self-selected target. */
+  target: number | null;
+}
+
+export interface ProjectionResult {
+  valid: boolean;
+  errors: Partial<Record<keyof ProjectionInput, string>>;
+  contributions: number;
+  total: number;
+  /** Shortfall vs. target at the end (null without a target). */
+  gapAtEnd: number | null;
+  aboveTarget: number | null;
+  /** Monthly amount that would reach the target in the period (null without a target or if already reached). */
+  requiredMonthly: number | null;
+}
+
+/**
+ * Illustrative arithmetic for a general goal: starting amount plus equal monthly
+ * contributions. Deliberately excludes interest and investment returns: the
+ * prototype does not forecast returns.
+ */
+export function projectWithoutReturns(input: ProjectionInput): ProjectionResult {
+  const errors: ProjectionResult['errors'] = {};
+  if (!isValidAmount(input.start)) errors.start = 'Enter an amount of $0 or more.';
+  if (!isValidAmount(input.monthly)) errors.monthly = 'Enter an amount of $0 or more.';
+  if (!isValidMonths(input.months)) errors.months = `Enter a whole number of months between 1 and ${MAX_MONTHS}.`;
+  if (input.target !== null && (!isValidAmount(input.target) || input.target <= 0)) errors.target = 'Enter a target greater than $0, or leave it blank.';
+  if (Object.keys(errors).length) {
+    return { valid: false, errors, contributions: 0, total: 0, gapAtEnd: null, aboveTarget: null, requiredMonthly: null };
+  }
+  const contributions = roundCents(input.monthly * input.months);
+  const total = roundCents(input.start + contributions);
+  if (input.target === null) return { valid: true, errors, contributions, total, gapAtEnd: null, aboveTarget: null, requiredMonthly: null };
+  const gapToday = Math.max(0, input.target - input.start);
+  return {
+    valid: true,
+    errors,
+    contributions,
+    total,
+    gapAtEnd: roundCents(Math.max(0, input.target - total)),
+    aboveTarget: roundCents(Math.max(0, total - input.target)),
+    requiredMonthly: gapToday === 0 ? null : Math.ceil(gapToday / input.months),
+  };
+}

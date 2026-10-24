@@ -73,3 +73,12 @@ describe('helpers', () => {
     expect(parseAmount('-5')).toBeNull();
   });
 });
+
+describe('projectWithoutReturns', () => {
+  it('adds contributions only, with an optional target', async () => {
+    const { projectWithoutReturns } = await import('./calc');
+    expect(projectWithoutReturns({ start: 15000, monthly: 400, months: 60, target: null })).toMatchObject({ valid: true, contributions: 24000, total: 39000, gapAtEnd: null });
+    expect(projectWithoutReturns({ start: 15000, monthly: 400, months: 60, target: 50000 })).toMatchObject({ gapAtEnd: 11000, requiredMonthly: 584 });
+    expect(projectWithoutReturns({ start: -1, monthly: 0, months: 0, target: 0 }).valid).toBe(false);
+  });
+});

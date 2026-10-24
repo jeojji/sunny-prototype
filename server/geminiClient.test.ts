@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { EMPTY_STATED_FACTS } from '../src/shared/api';
+import { EMPTY_CONTEXT } from '../src/shared/api';
 import { AiError, REPLY_SCHEMA, type ModelRequest } from './chat';
 import { createGeminiClient, DEFAULT_MODEL, toAiError, toInteractionParams, type InteractionsLike } from './geminiClient';
 import { handleChat, type ServerConfig } from './http';
@@ -63,8 +63,12 @@ describe('Gemini request mapping', () => {
     expect(tools.map((t) => t.type)).toEqual(TOOL_DEFINITIONS.map(() => 'function'));
     expect(tools.map((t) => t.name)).toEqual([
       'read_account_snapshot',
-      'request_snapshot_permission',
-      'propose_fact_update',
+      'request_account_permission',
+      'record_allocation',
+      'record_goal',
+      'record_time_horizon',
+      'show_offerings',
+      'record_next_step',
       'calculate_scenario',
       'prepare_summary',
       'prepare_support_preview',
@@ -134,9 +138,9 @@ describe('Gemini error mapping', () => {
     const body = {
       firstName: 'Alex',
       messages: [{ role: 'customer', text: 'What is a TFSA?' }],
-      facts: EMPTY_STATED_FACTS,
-      snapshotPermission: 'not_asked',
-      snapshot: null,
+      permission: 'not_asked',
+      account: null,
+      context: EMPTY_CONTEXT,
     };
     const r = await handleChat(cfg, JSON.stringify(body));
     expect(r.status).toBe(429);

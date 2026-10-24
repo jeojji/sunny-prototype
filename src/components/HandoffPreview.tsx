@@ -1,6 +1,7 @@
 import { useId, useState, type FormEvent } from 'react';
 import { autoNote, buildSummary } from '../conversation/summary';
 import type { ConversationState, SunnyEvent } from '../conversation/types';
+import { PURPOSE_LABEL } from '../domain/allocations';
 import { money } from '../lib/format';
 
 interface Props {
@@ -18,7 +19,7 @@ export function HandoffPreview({ state, dispatch }: Props) {
     e.preventDefault();
     const q = newQ.trim();
     if (!q) return;
-    dispatch({ type: 'setSupportQuestions', questions: [...state.supportQuestions, q] });
+    dispatch({ type: 'setSupportQuestions', questions: [...state.memory.supportQuestions, q] });
     setNewQ('');
   }
 
@@ -38,48 +39,46 @@ export function HandoffPreview({ state, dispatch }: Props) {
           <h2 id="handoff-facts">What you’ve confirmed</h2>
           <dl className="facts">
             <div className="fact">
-              <dt>Goal</dt>
-              <dd>{s.goal}</dd>
+              <dt>Goal or learning preference</dt>
+              <dd>{s.goal ?? 'Not discussed yet'}</dd>
             </div>
             <div className="fact">
-              <dt>Timeline</dt>
-              <dd>{s.timeline ?? 'Not confirmed yet'}</dd>
+              <dt>When the money might be needed</dt>
+              <dd>{s.horizon ?? 'Not discussed yet'}</dd>
             </div>
-            <div className="fact">
-              <dt>Saved for this goal</dt>
-              <dd>{s.startingSavings !== null ? money(s.startingSavings) : 'Not confirmed yet'}</dd>
-            </div>
-            {s.reservedSeparately ? (
-              <div className="fact">
-                <dt>Kept separate for emergencies</dt>
-                <dd>{money(s.reservedSeparately)}</dd>
+            {s.allocations.items.map((a) => (
+              <div className="fact" key={a.purpose}>
+                <dt>{PURPOSE_LABEL[a.purpose]} (chequing)</dt>
+                <dd>{money(a.amount)}</dd>
               </div>
-            ) : null}
+            ))}
+            {s.allocationsConfirmed && (
+              <div className="fact">
+                <dt>Chequing not yet assigned to a purpose</dt>
+                <dd>{money(s.allocations.unassigned)}</dd>
+              </div>
+            )}
             <div className="fact">
-              <dt>Self-selected target</dt>
-              <dd>{s.target !== null ? money(s.target) : 'Not confirmed yet'}</dd>
-            </div>
-            <div className="fact">
-              <dt>Monthly amount explored</dt>
-              <dd>{s.monthly !== null ? money(s.monthly) : 'Not confirmed yet'}</dd>
+              <dt>Offerings looked at</dt>
+              <dd>{s.offerings.length ? s.offerings.join(', ') : 'None yet'}</dd>
             </div>
           </dl>
         </section>
 
         <section className="panel-card" aria-labelledby="handoff-questions">
           <h2 id="handoff-questions">Questions you’d like help with</h2>
-          {state.supportQuestions.length === 0 ? (
+          {state.memory.supportQuestions.length === 0 ? (
             <p className="muted">No questions yet. Add one below.</p>
           ) : (
             <ul className="question-list">
-              {state.supportQuestions.map((q, i) => (
+              {state.memory.supportQuestions.map((q, i) => (
                 <li key={`${i}-${q}`}>
                   <span>{q}</span>
                   <button
                     type="button"
                     className="link-button"
                     onClick={() =>
-                      dispatch({ type: 'setSupportQuestions', questions: state.supportQuestions.filter((_, j) => j !== i) })
+                      dispatch({ type: 'setSupportQuestions', questions: state.memory.supportQuestions.filter((_, j) => j !== i) })
                     }
                     aria-label={`Remove question: ${q}`}
                   >
@@ -125,7 +124,7 @@ export function HandoffPreview({ state, dispatch }: Props) {
 
       <p className="concept-note">
         In this prototype, no message is sent, no appointment is booked and no advisor is connected. A future version could
-        pass this preview to a support channel chosen by Tangerine.
+        pass this preview to a Tangerine support channel, such as an advisor consultation.
       </p>
 
       <div className="page-actions">

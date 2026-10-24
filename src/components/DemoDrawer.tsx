@@ -1,81 +1,45 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
-import { DEFAULT_PROFILE, PRESETS, type CustomerProfile } from '../data/customers';
-import type { EngineMode } from '../conversation/types';
-import { isValidAmount, isValidMonths } from '../lib/calc';
+import { signalFor } from '../conversation/engine';
+import type { ConversationState, EngineMode, SunnyEvent } from '../conversation/types';
+import { PRESETS } from '../data/customers';
+import { DEFAULT_SIGNAL_CONFIG } from '../domain/signal';
+import { money } from '../lib/format';
 import type { StatusResponse } from '../shared/api';
+import { formatDate } from './Cards';
 
 interface Props {
   open: boolean;
-  profile: CustomerProfile;
-  mode: EngineMode;
+  state: ConversationState;
   aiStatus: StatusResponse | null;
   onSetMode: (mode: EngineMode) => void;
   onVerify: () => Promise<StatusResponse>;
   onClose: () => void;
-  onApplyProfile: (profile: CustomerProfile) => void;
-  onRestartConversation: () => void;
+  onLoadPreset: (id: string) => void;
+  onResetCustomer: () => void;
+  onResetAll: () => void;
+  onLaterVisit: () => void;
+  dispatch: (event: SunnyEvent) => void;
 }
 
-type NumericKey = Exclude<keyof CustomerProfile, 'id' | 'firstName'>;
+const STATUS_LABEL: Record<string, string> = {
+  qualifies: 'Qualifies: nudge shown',
+  not_met: 'Not met: no nudge',
+  insufficient_data: 'Insufficient data: no nudge',
+  suppressed_review: 'Suppressed: review flag',
+  suppressed_earmarked: 'Suppressed: customer said it’s set aside',
+  suppressed_dismissed: 'Suppressed: customer chose “Not now”',
+};
 
-const SNAPSHOT_FIELDS: [NumericKey, string][] = [
-  ['age', 'Age'],
-  ['chequingBalance', 'Chequing balance ($)'],
-  ['savingsBalance', 'Savings balance ($)'],
-  ['monthlyIncome', 'Monthly take-home income ($)'],
-  ['monthlyExpenses', 'Monthly expenses ($)'],
-  ['otherSavingsCommitments', 'Other savings commitments ($/mo)'],
-];
-const ANSWER_FIELDS: [NumericKey, string][] = [
-  ['emergencyReserve', 'Emergency reserve within savings ($)'],
-  ['homeTarget', 'Home savings target ($)'],
-  ['timelineMonths', 'Purchase timeline (months)'],
-  ['monthlyToExplore', 'Monthly amount to explore ($)'],
-];
-
-type Draft = Record<NumericKey, string> & { firstName: string };
-
-const toDraft = (p: CustomerProfile): Draft =>
-  ({
-    firstName: p.firstName,
-    ...Object.fromEntries([...SNAPSHOT_FIELDS, ...ANSWER_FIELDS].map(([k]) => [k, String(p[k])])),
-  }) as Draft;
-
-function validate(d: Draft): { profile?: CustomerProfile; errors: Partial<Record<keyof Draft, string>> } {
-  const errors: Partial<Record<keyof Draft, string>> = {};
-  if (!d.firstName.trim()) errors.firstName = 'Enter a first name.';
-  const nums = {} as Record<NumericKey, number>;
-  for (const [k] of [...SNAPSHOT_FIELDS, ...ANSWER_FIELDS]) {
-    const n = Number(d[k].replace(/[$,\s]/g, ''));
-    if (d[k].trim() === '' || !isValidAmount(n)) errors[k] = 'Enter 0 or more.';
-    nums[k] = n;
-  }
-  if (!errors.age && (!Number.isInteger(nums.age) || nums.age < 18 || nums.age > 100)) errors.age = 'Enter an age from 18 to 100.';
-  if (!errors.timelineMonths && !isValidMonths(nums.timelineMonths)) errors.timelineMonths = 'Enter 1–360 whole months.';
-  if (!errors.homeTarget && nums.homeTarget <= 0) errors.homeTarget = 'Enter a target above 0.';
-  if (!errors.emergencyReserve && nums.emergencyReserve > nums.savingsBalance) {
-    errors.emergencyReserve = 'The reserve is part of the savings balance, so it can’t exceed it.';
-  }
-  if (Object.keys(errors).length) return { errors };
-  return { errors, profile: { id: 'custom', firstName: d.firstName.trim(), ...nums } };
-}
-
-export function DemoDrawer({ open, profile, mode, aiStatus, onSetMode, onVerify, onClose, onApplyProfile, onRestartConversation }: Props) {
+export function DemoDrawer({ open, state, aiStatus, onSetMode, onVerify, onClose, onLoadPreset, onResetCustomer, onResetAll, onLaterVisit, dispatch }: Props) {
   const dialogRef = useRef<HTMLDivElement>(null);
-  const returnFocus = useRef<HTMLElement | null>(null);
   const titleId = useId();
-  const [draft, setDraft] = useState<Draft>(() => toDraft(profile));
-  const [errors, setErrors] = useState<Partial<Record<keyof Draft, string>>>({});
 
   useEffect(() => {
     if (!open) return;
-    setDraft(toDraft(profile));
-    setErrors({});
-    returnFocus.current = document.activeElement as HTMLElement | null;
-    dialogRef.current?.querySelector<HTMLElement>('button, input')?.focus();
-    const restore = returnFocus.current;
+    const restore = document.activeElement as HTMLElement | null;
+    dialogRef.current?.querySelector<HTMLElement>('button, input, select')?.focus();
     return () => restore?.focus?.();
-  }, [open, profile]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -84,9 +48,7 @@ export function DemoDrawer({ open, profile, mode, aiStatus, onSetMode, onVerify,
         e.preventDefault();
         onClose();
       } else if (e.key === 'Tab' && dialogRef.current) {
-        const items = Array.from(
-          dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), a[href]'),
-        );
+        const items = Array.from(dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select, a[href], summary'));
         if (!items.length) return;
         const first = items[0];
         const last = items[items.length - 1];
@@ -104,32 +66,9 @@ export function DemoDrawer({ open, profile, mode, aiStatus, onSetMode, onVerify,
   }, [open, onClose]);
 
   if (!open) return null;
-
-  function apply(e: FormEvent) {
-    e.preventDefault();
-    const { profile: p, errors: errs } = validate(draft);
-    setErrors(errs);
-    if (p) onApplyProfile(p);
-  }
-
-  const field = (k: keyof Draft, label: string, numeric = true) => (
-    <div className="drawer-field" key={k}>
-      <label htmlFor={`demo-${k}`}>{label}</label>
-      <input
-        id={`demo-${k}`}
-        inputMode={numeric ? 'decimal' : 'text'}
-        value={draft[k]}
-        onChange={(e) => setDraft((d) => ({ ...d, [k]: e.target.value }))}
-        aria-invalid={errors[k] ? true : undefined}
-        aria-describedby={errors[k] ? `demo-${k}-err` : undefined}
-      />
-      {errors[k] && (
-        <p className="field-error" id={`demo-${k}-err`}>
-          {errors[k]}
-        </p>
-      )}
-    </div>
-  );
+  const signal = signalFor(state);
+  const today = state.profile.balances[state.todayIndex]?.date;
+  const daysSinceFirst = state.todayIndex - state.profile.spec.todayIndex;
 
   return (
     <div className="drawer-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -140,63 +79,151 @@ export function DemoDrawer({ open, profile, mode, aiStatus, onSetMode, onVerify,
             ×
           </button>
         </div>
-        <p className="drawer-intro">
-          Presenter controls. Not part of the customer experience. Changing the customer resets the conversation so no
-          details carry over.
-        </p>
+        <p className="drawer-intro">Presenter controls. Not part of the customer experience. All customer data is synthetic.</p>
 
-        <EngineSection mode={mode} aiStatus={aiStatus} onSetMode={onSetMode} onVerify={onVerify} />
+        <EngineSection mode={state.mode} aiStatus={aiStatus} onSetMode={onSetMode} onVerify={onVerify} />
 
         <section aria-labelledby="presets-h">
-          <h3 id="presets-h">Scenario presets</h3>
+          <h3 id="presets-h">Scenarios</h3>
           <div className="preset-list">
             {PRESETS.map((p) => (
               <button
                 key={p.id}
                 type="button"
-                className={`preset${profile.id === p.id ? ' is-active' : ''}`}
-                aria-pressed={profile.id === p.id}
-                onClick={() => onApplyProfile(p.profile)}
+                className={`preset${state.profile.id === p.id ? ' is-active' : ''}`}
+                aria-pressed={state.profile.id === p.id}
+                onClick={() => onLoadPreset(p.id)}
               >
                 <strong>{p.label}</strong>
                 <span>{p.description}</span>
               </button>
             ))}
           </div>
+          <p className="drawer-intro">Each scenario keeps its own conversation and memory. Switching never carries details across.</p>
         </section>
 
-        <form onSubmit={apply} noValidate>
-          <h3>Synthetic customer</h3>
-          {field('firstName', 'First name', false)}
-          <p className="drawer-group">Account snapshot (visible to Sunny with permission)</p>
-          <div className="drawer-grid">{SNAPSHOT_FIELDS.map(([k, l]) => field(k, l))}</div>
-          <p className="drawer-group">Customer’s own answers (pre-fill only; Sunny learns these by asking)</p>
-          <div className="drawer-grid">{ANSWER_FIELDS.map(([k, l]) => field(k, l))}</div>
+        <section aria-labelledby="time-h" className="engine">
+          <h3 id="time-h">Simulated time</h3>
+          <p className="engine-status">
+            <strong>
+              Simulated today: {today ? formatDate(today) : '—'} · visit {state.memory.visit}
+            </strong>
+            <span>{daysSinceFirst > 0 ? `${daysSinceFirst} simulated days after the first visit.` : 'First visit.'}</span>
+          </p>
+          <button type="button" className="btn btn-primary" onClick={onLaterVisit} disabled={state.todayIndex + 30 >= state.profile.balances.length}>
+            Simulate a later visit (+30 days)
+          </button>
+          <p className="drawer-intro">
+            Moves the demo clock forward and returns to the dashboard. Sunny then uses the saved goal and next step. There’s no background monitoring and no real reminders.
+          </p>
+        </section>
+
+        <SignalSection state={state} dispatch={dispatch} statusLabel={STATUS_LABEL[signal.status]} />
+
+        <section aria-labelledby="reset-h">
+          <h3 id="reset-h">Reset</h3>
           <div className="drawer-actions">
-            <button type="submit" className="btn btn-primary">
-              Apply and reset conversation
+            <button type="button" className="btn btn-secondary" onClick={onResetCustomer}>
+              Reset this scenario (conversation, memory, time)
             </button>
-            <button type="button" className="btn btn-secondary" onClick={() => onApplyProfile(DEFAULT_PROFILE)}>
-              Reset to default
-            </button>
-            <button type="button" className="btn btn-secondary" onClick={onRestartConversation}>
-              Restart current conversation
+            <button type="button" className="btn btn-secondary" onClick={onResetAll}>
+              Reset all demo data
             </button>
           </div>
-        </form>
+          <p className="drawer-intro">Demo memory is saved only in this browser (synthetic data). Resetting clears it completely.</p>
+        </section>
 
         <section className="drawer-tech" aria-labelledby="tech-h">
           <h3 id="tech-h">About this build</h3>
           <ul>
-            <li>Live AI: Google Gemini (Gen AI SDK, free tier) via the local server. The key stays server-side.</li>
-            <li>Use only synthetic customer data and public sources: free-tier content may be used by Google to improve its products.</li>
-            <li>Calculations and goal facts are always deterministic and validated in code.</li>
-            <li>Answers use a curated knowledge base (reviewed 2026-10-21); no live web lookups.</li>
-            <li>Current customer id: {profile.id}</li>
+            <li>Signal: deterministic rule over synthetic daily balances, computed in the browser; separate from the AI.</li>
+            <li>Live AI: Google Gemini via the local server; the key stays server-side. Account details go to the AI only after the customer allows it.</li>
+            <li>Allocations, goals, calculations and offerings are validated in code.</li>
+            <li>Knowledge base: official Tangerine and government pages, reviewed Oct 21 and Oct 24, 2026.</li>
           </ul>
         </section>
       </div>
     </div>
+  );
+}
+
+function SignalSection({ state, dispatch, statusLabel }: { state: ConversationState; dispatch: (e: SunnyEvent) => void; statusLabel: string }) {
+  const id = useId();
+  const [threshold, setThreshold] = useState(String(state.signalConfig.threshold));
+  const [days, setDays] = useState(String(state.signalConfig.observationDays));
+  const [error, setError] = useState<string | null>(null);
+  const signal = signalFor(state);
+  const e = signal.evidence;
+
+  function apply(ev: FormEvent) {
+    ev.preventDefault();
+    const t = Number(threshold.replace(/[$,\s]/g, ''));
+    const d = Number(days);
+    if (!Number.isFinite(t) || t <= 0) return setError('Threshold must be a positive amount.');
+    if (!Number.isInteger(d) || d < 7 || d > 120) return setError('Observation window must be 7–120 days.');
+    setError(null);
+    dispatch({ type: 'setSignalConfig', config: { ...state.signalConfig, threshold: t, observationDays: d } });
+  }
+
+  return (
+    <section aria-labelledby={`${id}-h`} className="engine">
+      <h3 id={`${id}-h`}>Signal rule: elevated chequing balance</h3>
+      <p className={`engine-status ${signal.show ? 'is-ai' : 'is-scripted'}`} role="status">
+        <strong>{statusLabel}</strong>
+        <span>
+          {e.daysWithData}/{e.daysInWindow} days of data · lowest {e.minBalance !== null ? money(e.minBalance) : '—'} · {e.daysBelowThreshold} day(s) below {money(e.threshold)}
+        </span>
+      </p>
+      <ul className="check-list">
+        {signal.checks.map((c) => (
+          <li key={c.label} className={c.passed ? 'pass' : 'fail'}>
+            <span aria-hidden="true">{c.passed ? '✓' : '✕'}</span> <strong>{c.label}:</strong> {c.detail}
+          </li>
+        ))}
+      </ul>
+      <form onSubmit={apply} className="drawer-grid" noValidate>
+        <div className="drawer-field">
+          <label htmlFor={`${id}-t`}>Threshold ($)</label>
+          <input id={`${id}-t`} inputMode="decimal" value={threshold} onChange={(x) => setThreshold(x.target.value)} />
+        </div>
+        <div className="drawer-field">
+          <label htmlFor={`${id}-d`}>Observation window (days)</label>
+          <input id={`${id}-d`} inputMode="numeric" value={days} onChange={(x) => setDays(x.target.value)} />
+        </div>
+        <button type="submit" className="btn btn-secondary">
+          Apply rule settings
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => {
+            setThreshold(String(DEFAULT_SIGNAL_CONFIG.threshold));
+            setDays(String(DEFAULT_SIGNAL_CONFIG.observationDays));
+            dispatch({ type: 'setSignalConfig', config: DEFAULT_SIGNAL_CONFIG });
+          }}
+        >
+          Defaults
+        </button>
+      </form>
+      {error && <p className="field-error">{error}</p>}
+      <label className="check">
+        <input type="checkbox" checked={state.profile.reviewFlag} onChange={(x) => dispatch({ type: 'setProfileFlags', reviewFlag: x.target.checked })} />
+        <span>Flag recent activity for review (unusual or incomplete) — suppresses the nudge</span>
+      </label>
+      <div className="drawer-field">
+        <label htmlFor={`${id}-h2`}>History available</label>
+        <select
+          id={`${id}-h2`}
+          value={state.profile.historyDaysAvailable ?? 'all'}
+          onChange={(x) => dispatch({ type: 'setProfileFlags', historyDaysAvailable: x.target.value === 'all' ? null : Number(x.target.value) })}
+        >
+          <option value="all">All synthetic history</option>
+          <option value="60">Last 60 days only (insufficient)</option>
+          <option value="30">Last 30 days only (insufficient)</option>
+        </select>
+      </div>
+      <p className="drawer-intro">Prototype assumptions, not Tangerine policy. The signal is a reason to ask a question; it never sets an amount, suitability or product.</p>
+    </section>
   );
 }
 

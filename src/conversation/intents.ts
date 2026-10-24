@@ -1,150 +1,183 @@
 /**
- * Keyword interpreter for typed text in the scripted demo mode. Maps text to
- * a supported event; anything else becomes a clarifying 'unsupported' reply.
- * AI mode does not use this file: the model interprets text on the server.
+ * Keyword interpreter for typed text in the scripted demo mode. Deliberately
+ * limited: maps text to a supported event, otherwise a clarifying reply.
+ * AI mode doesn't use this; the model interprets text on the server.
  */
-import { parseAmount } from '../lib/calc';
-import { findAmounts, parseDuration } from '../lib/parse';
-import type { ConversationState, CustomerTurn, SunnyEvent } from './types';
+import type { Allocation, Purpose } from '../domain/allocations';
+import { findAmounts } from '../lib/parse';
+import type { GoalType } from '../shared/offerings';
+import type { ConversationState, CustomerTurn, Horizon, NextStepId, SunnyEvent } from './types';
 
 const has = (text: string, re: RegExp) => re.test(text);
 
-/** First amount in the text: positive value, or a flag that it was negative. */
-function firstAmount(text: string): { value: number; negative: boolean } | null {
-  return findAmounts(text)[0] ?? null;
+const PURPOSE_WORDS: [Purpose, RegExp][] = [
+  ['emergency', /emergenc|rainy day|safety net|cushion/],
+  ['upcoming_expenses', /bill|expense|rent|upcoming|spending|living costs|day.to.day/],
+  ['tuition', /tuition|school|college|university|course/],
+  ['debt_repayment', /debt|loan|credit card|line of credit/],
+];
+
+/** "I need $3,000 for bills and $10,000 for emergencies" → chequing allocations by purpose. */
+export function parseAllocations(raw: string): Allocation[] {
+  const text = raw.toLowerCase();
+  const re = /\$?\s?\d[\d,]*(?:\.\d+)?\s?k?\b/g;
+  const matches = [...text.matchAll(re)].filter((m) => !/^\s*(years?|months?|%)/.test(text.slice((m.index ?? 0) + m[0].length)));
+  const out: Allocation[] = [];
+  matches.forEach((m, i) => {
+    const start = m.index ?? 0;
+    const end = start + m[0].length;
+    const nextStart = matches[i + 1]?.index ?? text.length;
+    const after = text.slice(end, Math.min(nextStart, end + 60));
+    const before = text.slice(Math.max(0, start - 30), start);
+    const amount = findAmounts(m[0])[0];
+    if (!amount || amount.negative) return;
+    const purpose = PURPOSE_WORDS.find(([, w]) => w.test(after))?.[0] ?? PURPOSE_WORDS.find(([, w]) => w.test(before))?.[0];
+    if (purpose && !out.some((a) => a.purpose === purpose)) out.push({ account: 'chequing', purpose, amount: amount.value });
+  });
+  return out;
+}
+
+export function parseGoal(t: string): GoalType | null {
+  if (has(t, /build wealth|grow (it|my money|this)|invest|long.term|wealth|retire/)) return 'build_wealth';
+  if (has(t, /accessible|earn(ing)? (some )?interest|keep it (safe|available)|high.interest|savings account/)) return 'accessible_interest';
+  if (has(t, /home|house|condo|down payment|fhsa/)) return 'first_home';
+  if (has(t, /understand|options|learn|before deciding|not sure what/)) return 'understand_options';
+  return null;
+}
+
+export function parseHorizon(t: string): Horizon | null {
+  if (has(t, /not sure|don.t know|no idea|unsure/)) return 'not_sure';
+  if (has(t, /next year|within (a|one) year|this year|few months|soon|1 year|under a year/)) return 'under_1_year';
+  if (has(t, /(5|five)\+|more than (5|five)|over (5|five)|long.term|decade|10 years|retire|many years|at least (5|five)/)) return 'over_5_years';
+  if (has(t, /(2|3|4|two|three|four|couple|few) years|1.5 years|1-5|one to five/)) return '1_to_5_years';
+  return null;
+}
+
+export function parseNextStep(t: string): NextStepId | null {
+  if (has(t, /risk/) && has(t, /learn|understand|first|before/)) return 'learn_risk';
+  if (has(t, /compare/)) return 'compare_options';
+  if (has(t, /scenario|calculat|illustrat|what if i (put|save|add)/)) return 'explore_scenario';
+  if (has(t, /official|product page|read (more|the page)/)) return 'read_product_page';
+  if (has(t, /prepare questions|questions for/)) return 'prepare_questions';
+  if (has(t, /come back|save (this|it) for later|later\b|remind me/)) return 'save_for_later';
+  if (has(t, /not right now|no thanks|don.t want to|not interested|stop here/)) return 'not_proceeding';
+  return null;
+}
+
+function earmarkNote(t: string): string | null {
+  if (has(t, /tuition|school|college|university/)) return 'for tuition';
+  if (has(t, /home|house|condo|down payment/)) return 'for a home purchase';
+  if (has(t, /wedding/)) return 'for a wedding';
+  if (has(t, /car|vehicle/)) return 'for a vehicle';
+  if (has(t, /trip|travel/)) return 'for travel';
+  return null;
 }
 
 function classify(raw: string, state: ConversationState): SunnyEvent {
-  const t = raw.toLowerCase().trim().replace(/[’]/g, "'");
-  const step = state.step;
-  const amount = firstAmount(t);
+  const t = raw.toLowerCase().replace(/[’]/g, "'").trim();
+  const stage = state.stage;
+  const amounts = findAmounts(t);
 
   if (has(t, /\b(restart|start over|reset)\b/)) return { type: 'requestRestart' };
 
-  // Advice requests come before topic matching ("should I buy a GIC?" is a recommendation request).
+  // Advice requests (individual recommendations) come first.
   if (
-    (has(t, /\brecommend|\badvi[cs]e me\b|\bwhich (one )?should i\b|\bbest (one|option|account|investment) for me\b/) ||
-      has(t, /\b(which|what|should i)\b.*\b(invest\w*|buy|stocks?|etfs?|funds?|put my money)\b/)) &&
-    !has(t, /\bwhat (is|are|does)\b/)
+    has(t, /should i (invest|put|buy|move)|which (fund|investment|portfolio|one) should|what should i (invest|buy|do with)|recommend|tell me what to (do|buy)|is it a good idea to invest|best (investment|fund|option) for me/) &&
+    !has(t, /what is|what are|what's the difference/)
   ) {
     return { type: 'askInvestment' };
   }
+  if (amounts.some((a) => a.negative)) return { type: 'invalidAmount', reason: 'negative' };
 
-  // Emergency-money allocation in context, e.g. "keep $10,000 for emergencies" or "I need some of that for emergencies".
-  if (has(t, /emergenc/) && has(t, /\b(keep|need|set aside|aside|hold back|reserve|save|leave|separate)\b/) && !has(t, /\bwhy\b/)) {
-    if (amount?.negative) return { type: 'invalidAmount', reason: 'negative' };
-    return { type: 'setEmergencyReserve', amount: amount ? amount.value : null };
+  // Stage-specific answers.
+  if (stage === 'permission') {
+    if (has(t, /^(yes|yeah|sure|ok|okay|go ahead)\b|use my (account|details)/)) return { type: 'permission', allow: true };
+    if (has(t, /^(no|nope)\b|general|rather not|don't use/)) return { type: 'permission', allow: false };
   }
-
-  // Negative amounts are never silently made positive.
-  if (amount?.negative) return { type: 'invalidAmount', reason: 'negative' };
-
-  // Bare answers to the current question.
-  if (/^\$?\s?[\d,]+(\.\d+)?\s?k?$/.test(t)) {
-    const n = parseAmount(t);
-    if (n !== null) {
-      switch (step) {
-        case 'target':
-          return { type: 'setTarget', amount: n };
-        case 'homeSavings':
-        case 'homeSavingsAmount':
-          return { type: 'setHomeSavings', amount: n };
-        case 'reserveAmount':
-          return { type: 'setEmergencyReserve', amount: n };
-        case 'monthly':
-          return { type: 'setMonthly', amount: n };
-        case 'timelineMonths':
-          return Number.isInteger(n) ? { type: 'setTimelineMonths', months: n } : { type: 'invalidAmount', reason: 'unclear' };
-        case 'editTarget':
-          return { type: 'updateFacts', patch: { target: n } };
-        case 'editHomeSavings':
-          return { type: 'updateFacts', patch: { homeSavings: n } };
-        case 'editMonthly':
-          return { type: 'updateFacts', patch: { monthly: n } };
-        case 'editTimeline':
-          return Number.isInteger(n) ? { type: 'updateFacts', patch: { timelineMonths: n } } : { type: 'invalidAmount', reason: 'unclear' };
-      }
+  if (stage === 'clarifyOver') {
+    if (has(t, /another|elsewhere|other (bank|account)|outside/)) return { type: 'clarifyOver', heldElsewhere: true };
+    if (has(t, /re-?enter|mistake|wrong|adjust|no\b/)) return { type: 'clarifyOver', heldElsewhere: false };
+  }
+  if (stage === 'confirmAllocations') {
+    if (has(t, /^(yes|yep|yeah|right|correct|that's right|exactly)\b/)) return { type: 'confirmAllocations' };
+    if (has(t, /^(no|not quite)\b|correct (that|it)|change|fix/) && !parseAllocations(t).length) return { type: 'askAllocationAmounts' };
+  }
+  const allocations = parseAllocations(t);
+  if (allocations.length && (stage === 'purpose' || stage === 'purposeAmounts' || stage === 'confirmAllocations')) {
+    return stage === 'purpose' ? { type: 'statePurpose', kind: 'allocations', allocations } : { type: 'setAllocations', allocations };
+  }
+  if (stage === 'purpose' || stage === 'purposeAmounts') {
+    if (has(t, /debt|loan|credit card|owe/)) return { type: 'statePurpose', kind: 'debt' };
+    if (has(t, /no (goal|plan)|don't have (a )?(goal|plan)|haven't done anything|nothing specific|no idea what|just sitting/)) {
+      return { type: 'statePurpose', kind: 'no_plan' };
+    }
+    if (stage === 'purposeAmounts' && has(t, /^(no|none)\b|none of it/)) return { type: 'setAllocations', allocations: [] };
+    if (has(t, /already|set aside|for (my |a )?(tuition|school|wedding|car|trip|house|home)|buying a (home|house)|is for|it's for|that's for|spoken for/)) {
+      return { type: 'statePurpose', kind: 'earmarked', note: earmarkNote(t) ?? undefined };
     }
   }
-  const duration = parseDuration(t);
-  if (duration !== null && (step === 'timeline' || step === 'timelineMonths')) return { type: 'setTimelineMonths', months: duration };
-  if (duration !== null && step === 'editTimeline') return { type: 'updateFacts', patch: { timelineMonths: duration } };
-  if (step === 'confirmElsewhere') {
-    if (has(t, /^(yes|yep|yeah|sure)\b|elsewhere|another|other (bank|account)/)) return { type: 'confirmHeldElsewhere', yes: true };
-    if (has(t, /^(no|nope)\b|re-?enter|mistake|typo/)) return { type: 'confirmHeldElsewhere', yes: false };
+  if (stage === 'goal') {
+    const g = parseGoal(t);
+    if (g) return { type: 'setGoal', goal: { type: g, detail: raw.trim().slice(0, 200) } };
+    if (has(t, /something else|other/)) return { type: 'setGoal', goal: { type: 'other', detail: raw.trim().slice(0, 200) } };
+  }
+  if (stage === 'horizon') {
+    const h = parseHorizon(t);
+    if (h) return { type: 'setHorizon', horizon: h };
+  }
+  if (stage === 'explore') {
+    const n = parseNextStep(t);
+    if (n) return { type: 'chooseNextStep', step: n };
   }
 
-  // Simplify / overwhelmed.
-  if (has(t, /overwhelm|simpler|simply|plain english|too much|confus|eli5|don't understand|lost me/)) return { type: 'simpler' };
+  // Corrections anywhere: "Actually, keep $8,000 for emergencies".
+  if (allocations.length && state.memory.allocations.length) return { type: 'setAllocations', allocations };
 
-  // Education topics (more specific first).
-  if (has(t, /timeline matter|why (does|is) (the |my )?timeline|why.*timing/)) return { type: 'openTopic', topic: 'timeline' };
-  if (has(t, /\bfhsa\b|first home savings/)) {
-    if (has(t, /tangerine|you (guys )?offer|do you have|can i open|available/)) return { type: 'openTopic', topic: 'fhsaTangerine' };
-    if (has(t, /\binvest|risk|lose|inside|hold\b/)) return { type: 'openTopic', topic: 'fhsaInvestment' };
-    if (has(t, /\btfsa\b|tax.free savings|differ/)) return { type: 'openTopic', topic: 'tfsa' };
-    return { type: 'openTopic', topic: 'fhsa' };
-  }
-  if (has(t, /(does|do) (tangerine|you) offer (one|it)|offer one\b/) && state.activeTopic && ['fhsa', 'fhsaInvestment', 'accounts', 'tfsa'].includes(state.activeTopic)) {
-    return { type: 'openTopic', topic: 'fhsaTangerine' };
-  }
+  // Education topics.
+  if (has(t, /overwhelm|simpler|simply|plain english|too much|confus|lost me/)) return { type: 'simpler' };
+  if (has(t, /why (are you|am i|did you)|why this|why me/)) return { type: 'openTopic', topic: 'why_asking' };
+  if (has(t, /not ready|need (more )?time|don't want to decide|not sure yet|thinking about it/)) return { type: 'openTopic', topic: 'not_ready' };
+  if (has(t, /gic.*(fund|etf)|(fund|etf).*gic/)) return { type: 'openTopic', topic: 'gic_vs_fund' };
+  if (has(t, /(tfsa|tax.free).*(rrsp|rsp)|(rrsp|rsp).*(tfsa|tax.free)/)) return { type: 'openTopic', topic: 'tfsa_vs_rrsp' };
+  if (has(t, /is (a|an|the) (tfsa|rrsp|rsp|fhsa) an investment|account vs|container|what goes inside/)) return { type: 'openTopic', topic: 'account_vs_holdings' };
+  if (has(t, /lose (my )?money|risky|\brisk\b|safe\b|insured|cdic/)) return { type: 'openTopic', topic: 'risk' };
+  if (has(t, /need (the|this|my|it|that) money (next year|soon)|need it (next year|soon)|what if i need/)) return { type: 'openTopic', topic: 'need_next_year' };
+  if (has(t, /leave it in chequing|keep it in chequing|why (wouldn't|not) i (just )?leave|stay in chequing/)) return { type: 'openTopic', topic: 'leave_in_chequing' };
+  if (has(t, /what can tangerine|tangerine (actually )?help|what does tangerine offer|tangerine (products|options)/)) return { type: 'openTopic', topic: 'tangerine_help' };
+  if (has(t, /saving (vs|versus|and) investing|difference between saving|how (does )?investing works?|what is investing/)) return { type: 'openTopic', topic: 'saving_vs_investing' };
+  if (has(t, /fhsa/)) return { type: 'openTopic', topic: has(t, /tangerine|offer/) ? 'fhsa_tangerine' : 'first_home' };
   if (has(t, /\btfsa\b|tax.free savings/)) return { type: 'openTopic', topic: 'tfsa' };
+  if (has(t, /\brrsp\b|\brsp\b|retirement savings/)) return { type: 'openTopic', topic: 'rrsp' };
   if (has(t, /\bgics?\b|guaranteed investment/)) return { type: 'openTopic', topic: 'gic' };
-  if (has(t, /lose (my )?money|risky|risk|safe\b|insured|cdic|guaranteed\b/)) return { type: 'openTopic', topic: 'risk' };
-  if (has(t, /take (the |my )?money out|withdraw|whenever i want|access (my|the) money|locked in|get my money/)) return { type: 'openTopic', topic: 'access' };
-  if (has(t, /what can tangerine|tangerine (actually )?help|how can tangerine|what does tangerine offer|tangerine products?/)) {
-    return { type: 'openTopic', topic: 'tangerine' };
-  }
-  if (has(t, /don't know (where|how) to start|where (do|should) i (start|begin)|no idea where/)) return { type: 'openTopic', topic: 'start' };
-  if (has(t, /how much (do|will|would) i need|don't know how much|down payment|minimum/)) return { type: 'openTopic', topic: 'downPayment' };
-  if (has(t, /home.saving accounts?|accounts? (for|to) (save|saving)|which accounts|types of accounts|home buyers'? plan|\bhbp\b|\brrsp\b/)) {
-    return { type: 'openTopic', topic: 'accounts' };
-  }
+  if (has(t, /fees?\b|cost|mer\b|management fee/)) return { type: 'openTopic', topic: 'fees' };
+  if (has(t, /fund|etf|portfolio|mutual/)) return { type: 'openTopic', topic: 'funds' };
+  if (has(t, /timeline|time horizon|how long/)) return { type: 'openTopic', topic: 'horizon' };
   if (has(t, /emergenc/)) return { type: 'openTopic', topic: 'emergency' };
-  if (has(t, /prepare|documents?|what (info|information)|bring|before (speaking|talking|meeting)|checklist/)) return { type: 'openTopic', topic: 'prepare' };
-  if (has(t, /contact|phone|call (tangerine|them)|chat with|reach (tangerine|them)|hours/)) return { type: 'openTopic', topic: 'contact' };
-  if (has(t, /\boptions?\b|compare/) && state.offer === 'investment') return { type: 'openTopic', topic: 'options' };
+  if (has(t, /debt|loan|credit card/)) return { type: 'openTopic', topic: 'debt' };
+  if (has(t, /first home|buy(ing)? a (home|house)|down payment/)) return { type: 'openTopic', topic: 'first_home' };
+  if (has(t, /contact|phone|call tangerine|hours/)) return { type: 'openTopic', topic: 'contact' };
 
-  // Assumption changes.
-  const value = amount && !amount.negative ? amount.value : null;
-  if (has(t, /monthly|per month|a month|each month|\/\s?mo/)) {
-    return value !== null ? { type: 'updateFacts', patch: { monthly: value } } : { type: 'startEdit', field: 'monthly' };
+  // Goals stated anywhere.
+  const goal = parseGoal(t);
+  if (goal && has(t, /\b(i want|i'd like|help me|my goal|i'm (hoping|trying|looking))\b/)) {
+    return { type: 'setGoal', goal: { type: goal, detail: raw.trim().slice(0, 200) } };
   }
-  if (has(t, /starting (savings|amount)|already saved|saved so far|home savings|savings (for|toward) (the|this|my) (goal|home)/)) {
-    return value !== null ? { type: 'updateFacts', patch: { homeSavings: value } } : { type: 'startEdit', field: 'homeSavings' };
-  }
-  if (has(t, /\btarget\b|goal amount/)) {
-    return value !== null && value > 0 ? { type: 'updateFacts', patch: { target: value } } : { type: 'startEdit', field: 'target' };
-  }
-  if (has(t, /timeline|buy in|buying in|purchase in|when i buy/) || (duration !== null && has(t, /change|instead|actually/))) {
-    return duration !== null ? { type: 'updateFacts', patch: { timelineMonths: duration } } : { type: 'startEdit', field: 'timelineMonths' };
-  }
-  if (has(t, /change|edit|update|correct/) && has(t, /assumption|number|detail|answer/)) return { type: 'pickEdit' };
 
-  // Navigation and journey.
-  if (has(t, /human|person|advis|someone|support|talk to|speak (to|with)|call me|agent/)) return { type: 'prepareSupport' };
-  if (has(t, /summary|recap|wrap up/)) return { type: 'showSummary' };
-  if (has(t, /next steps?/)) return { type: 'pickNextSteps' };
-  if (has(t, /savings goal|explore (a |my )?goal|how much (could|can) i save|calculat|scenario|how long (will|would) it take/)) return { type: 'confirmGoal' };
-  if (!state.facts.goalConfirmed && has(t, /buy (a|my) (first )?(home|house|condo|place)|buying a (home|house|condo)|homeowner/)) {
-    return { type: 'openTopic', topic: 'start' };
-  }
-  if (step === 'permission') {
-    if (has(t, /snapshot|use my account|^(yes|sure|ok|okay)\b/)) return { type: 'chooseDataSource', source: 'snapshot' };
-    if (has(t, /myself|manual|enter|^no\b/)) return { type: 'chooseDataSource', source: 'manual' };
-  }
-  if (step === 'confirmRestart') {
+  // Navigation.
+  if (has(t, /advis|talk to|speak (to|with)|a person|human|someone/)) return { type: 'openTopic', topic: 'advisors' };
+  if (has(t, /prepare questions|questions for/)) return { type: 'prepareSupport' };
+  if (has(t, /summar|recap|wrap up/)) return { type: 'showSummary' };
+  if (has(t, /scenario|calculat|what if i (put|save|add)/)) return { type: 'startScenario' };
+  if (has(t, /next step/)) return { type: 'pickNextStep' };
+  if (stage === 'confirmRestart') {
     if (has(t, /^(yes|yep|sure)\b/)) return { type: 'confirmRestart' };
     if (has(t, /^(no|nope|cancel)\b/)) return { type: 'cancel' };
   }
   if (has(t, /^(continue|go on|next|carry on|resume)\b/)) return { type: 'continue' };
-  if (has(t, /^(back|go back|previous)\b/)) return { type: 'back' };
-  if (has(t, /help|what can you|what do you do/)) return { type: 'help' };
+  if (has(t, /help|what can you/)) return { type: 'help' };
   return { type: 'unsupported' };
 }
 
 export function interpretText(text: string, state: ConversationState): CustomerTurn {
   return { event: classify(text, state), say: text.trim() };
 }
-
-export { parseDuration };

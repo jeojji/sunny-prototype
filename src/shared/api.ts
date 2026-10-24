@@ -2,7 +2,7 @@
  * Contract between the browser and the local Sunny API, plus validation rules
  * shared by the server tools and the client reducer.
  */
-import { isValidMonths, MAX_AMOUNT, type ScenarioInput } from '../lib/calc.ts';
+import { MAX_AMOUNT } from '../lib/calc.ts';
 
 export const LIMITS = {
   /** Most recent messages sent to the model. */
@@ -19,44 +19,86 @@ export const LIMITS = {
   maxSuggestions: 4,
 } as const;
 
-export type FactField = 'target' | 'homeSavings' | 'reservedSeparately' | 'monthly' | 'timelineMonths';
-export type FactPatch = Partial<Record<FactField, number>>;
+export type AccountKey = 'chequing' | 'savings';
+export type PurposeKey = 'upcoming_expenses' | 'emergency' | 'tuition' | 'debt_repayment' | 'other';
+export type GoalKey = 'build_wealth' | 'accessible_interest' | 'first_home' | 'understand_options' | 'other';
+export type HorizonKey = 'under_1_year' | '1_to_5_years' | 'over_5_years' | 'not_sure';
+export type NextStepKey =
+  | 'learn_risk'
+  | 'compare_options'
+  | 'explore_scenario'
+  | 'read_product_page'
+  | 'prepare_questions'
+  | 'save_for_later'
+  | 'not_proceeding';
 
-/** Customer-stated goal facts. null = not stated/confirmed. */
-export interface StatedFacts {
-  target: number | null;
-  homeSavings: number | null;
-  reservedSeparately: number | null;
-  monthly: number | null;
-  timelineMonths: number | null;
-  /** Customer confirmed some home savings are held outside the snapshot accounts. */
-  homeSavingsHeldElsewhere: boolean;
-}
+export const PURPOSES: PurposeKey[] = ['upcoming_expenses', 'emergency', 'tuition', 'debt_repayment', 'other'];
+export const GOALS: GoalKey[] = ['build_wealth', 'accessible_interest', 'first_home', 'understand_options', 'other'];
+export const HORIZONS: HorizonKey[] = ['under_1_year', '1_to_5_years', 'over_5_years', 'not_sure'];
+export const NEXT_STEPS: NextStepKey[] = [
+  'learn_risk',
+  'compare_options',
+  'explore_scenario',
+  'read_product_page',
+  'prepare_questions',
+  'save_for_later',
+  'not_proceeding',
+];
 
-/** The minimum synthetic snapshot shared with the model, and only after permission. */
-export interface Snapshot {
-  chequingBalance: number;
-  savingsBalance: number;
-  monthlyIncome: number;
-  monthlyExpenses: number;
-  otherSavingsCommitments: number;
+export interface AllocationDTO {
+  account: AccountKey;
+  purpose: PurposeKey;
+  amount: number;
 }
 
 export type SnapshotPermission = 'not_asked' | 'granted' | 'declined';
 
+/** Account details shared with the model only after permission. */
+export interface AccountContext {
+  chequingBalance: number;
+  savingsBalance: number;
+  monthlyIncome: number;
+  monthlyExpenses: number;
+  /** The dashboard signal, computed locally from (synthetic) account history. */
+  signal: { rule: 'elevated_chequing_balance'; shown: boolean; observationDays: number; threshold: number; minBalance: number | null; maxBalance: number | null } | null;
+}
+
+/** Customer-confirmed conversation context (safe to send without permission: the customer said it). */
+export interface ConversationContext {
+  origin: 'nudge' | 'self' | 'checkin' | null;
+  allocations: AllocationDTO[];
+  goal: { type: GoalKey; detail: string | null } | null;
+  horizon: HorizonKey | null;
+  nextStep: NextStepKey | null;
+  offeringsViewed: string[];
+  /** Earlier visit's next step, for check-ins. */
+  previousNextStep: NextStepKey | null;
+}
+
+export interface ScenarioDTO {
+  start: number;
+  monthly: number;
+  months: number;
+  target: number | null;
+}
+
 export interface ChatRequest {
   firstName: string;
   messages: { role: 'customer' | 'sunny'; text: string }[];
-  facts: StatedFacts;
-  snapshotPermission: SnapshotPermission;
-  /** Present only when snapshotPermission is 'granted'. */
-  snapshot: Snapshot | null;
+  permission: SnapshotPermission;
+  /** Present only when permission is 'granted'. */
+  account: AccountContext | null;
+  context: ConversationContext;
 }
 
 export type ChatEffect =
-  | { type: 'factsUpdated'; patch: FactPatch; heldElsewhere?: boolean }
-  | { type: 'requestSnapshotPermission'; reason: string }
-  | { type: 'scenario'; input: ScenarioInput; hypothetical: boolean }
+  | { type: 'allocationsUpdated'; allocations: AllocationDTO[] }
+  | { type: 'goalSet'; goal: { type: GoalKey; detail: string | null } }
+  | { type: 'horizonSet'; horizon: HorizonKey }
+  | { type: 'offeringsShown'; ids: string[]; reason: string }
+  | { type: 'nextStepSet'; step: NextStepKey }
+  | { type: 'scenario'; input: ScenarioDTO }
+  | { type: 'requestPermission'; reason: string }
   | { type: 'summaryReady' }
   | { type: 'handoffReady'; questions: string[] };
 
@@ -82,23 +124,22 @@ export interface StatusResponse {
   verified?: boolean;
 }
 
-export type FactIssue = 'not_a_number' | 'negative' | 'zero_target' | 'too_large' | 'months_invalid';
+export type AmountIssue = 'not_a_number' | 'negative' | 'too_large';
 
-/** Validate a single customer-stated value. Returns null if acceptable. */
-export function checkFactValue(field: FactField, value: unknown): FactIssue | null {
+/** Validate a customer-stated dollar amount. Returns null if acceptable. */
+export function checkAmount(value: unknown): AmountIssue | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 'not_a_number';
   if (value < 0) return 'negative';
-  if (field === 'timelineMonths') return isValidMonths(value) ? null : 'months_invalid';
   if (value > MAX_AMOUNT) return 'too_large';
-  if (field === 'target' && value === 0) return 'zero_target';
   return null;
 }
 
-export const EMPTY_STATED_FACTS: StatedFacts = {
-  target: null,
-  homeSavings: null,
-  reservedSeparately: null,
-  monthly: null,
-  timelineMonths: null,
-  homeSavingsHeldElsewhere: false,
+export const EMPTY_CONTEXT: ConversationContext = {
+  origin: null,
+  allocations: [],
+  goal: null,
+  horizon: null,
+  nextStep: null,
+  offeringsViewed: [],
+  previousNextStep: null,
 };

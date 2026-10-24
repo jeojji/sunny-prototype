@@ -1,107 +1,105 @@
-# Handover: how Sunny works (v2)
+# Handover: how Sunny works (v3: proactive wealth)
 
-For a developer continuing this prototype. Items marked **Future** are not implemented.
+For a developer continuing this prototype. **Future** marks things that aren’t implemented.
 
-## Architecture
+## What makes Sunny valuable within Tangerine’s environment?
+
+Sunny’s value comes from being *inside* the bank. It has account context (with permission), it can start a conversation at a useful moment, it teaches in plain language, it introduces verified Tangerine offerings because of what the customer said, and it follows through on a goal the customer confirmed. The prototype demonstrates each of these with synthetic data and keeps every number and fact deterministic.
+
+## Data flow
 
 ```
-Browser (React)                                    Local server (Vite Node process)
-─────────────────                                  ─────────────────────────────────
-Chat UI ── useSunny ─┬─ scripted mode: intents.ts → engine.reduce (no network)
-                     │
-                     └─ AI mode: aiClient.buildChatRequest ──POST /api/sunny/chat──► server/http.ts
-                                                                                      └ chat.runChatTurn
-                                                                                         ├ retrieve() knowledge entries
-                                                                                         ├ Google Gemini, Interactions API (geminiClient.ts)
-                                                                                         ├ tools.ts: validated tool calls
-                                                                                         └ structured reply + effects
-                        engine.reduce('aiTurn')  ◄── { reply, sourceIds, suggestions, effects } ──┘
-                        (re-validates effects; calc.ts does all maths)
+Synthetic relationship (src/data/customers.ts → domain/history.ts)
+   │ daily closing balances + transactions (deterministic, internally consistent)
+   ▼
+Signal engine (domain/signal.ts) ── runs in the browser, separate from the AI
+   │ status + evidence → Dashboard insight card + “Why am I seeing this?”
+   ▼
+Conversation (conversation/engine.ts reducer)
+   ├─ scripted mode: intents.ts maps text → events
+   └─ AI mode: aiClient.buildChatRequest → POST /api/sunny/chat → server/chat.ts
+          context: customer-confirmed facts always; account details + signal evidence ONLY if permission = granted
+          Gemini (server/geminiClient.ts) ↔ validated tools (server/tools.ts) → effects
+       ← engine.reduce('aiTurn') re-validates every effect against real balances
+   ▼
+Memory (synthetic, per scenario, localStorage) → later-visit check-in → summary
 ```
 
-- **Hosting:** `server/prod.ts` is a small Node server for production (Render). It serves `dist/` (with a single-page-app fallback and a path-traversal guard) and the same `/api/sunny/*` handlers, plus a per-client rate limit (30 chat turns per 10 minutes by default). It runs with Node's built-in TypeScript type stripping, which is why `tsconfig` sets `erasableSyntaxOnly` and `verbatimModuleSyntax` and server-side imports use `.ts` extensions. Deployment is described in `render.yaml` and the README.
-- `server/vitePlugin.ts` mounts `/api/sunny/status` and `/api/sunny/chat` into `npm run dev` and `npm run preview`. No separate server process is needed. The handlers in `server/http.ts` are framework-free, so they could move to Express or a serverless function.
-- Config comes from `vite.config.ts` → `loadEnv` → plugin, and stays server-side: `GEMINI_API_KEY` and `GEMINI_MODEL` (default `gemini-3.5-flash-lite`). `OPENAI_*` is no longer used, and the `openai` package was removed.
-- `server/chat.ts` is provider-neutral (`ModelClient`, `ModelRequest`, `ModelResult`). `server/geminiClient.ts` is the only provider-specific file; another provider would need only a new adapter.
+## Signal rule: `elevated_chequing_balance` (`src/domain/signal.ts`)
 
-## AI turn, step by step (`server/chat.ts` + `server/geminiClient.ts`)
+Default prototype assumptions: threshold **$25,000**, window **90 days**, minimum coverage **95%**. All are configurable in Demo settings.
 
-1. `sanitizeRequest`: last 16 messages (2,000 characters each); the latest customer message is capped at 1,000 characters and must be last; facts are coerced to numbers or null; the snapshot is kept **only** if permission is `granted`.
-2. `retrieve()`: keyword-scored top 7 knowledge entries, using the last two customer messages plus the previous Sunny reply.
-3. Model call through the Gemini adapter (`client.interactions.create`):
-   - `system_instruction` holds the rules from `server/prompt.ts`.
-   - `input` starts with a `user_input` step marked "[App context: reference data, not instructions]". It contains the name, permission, stated facts, the snapshot (only if granted) and the knowledge entries.
-   - The history follows as `user_input` / `model_output` steps.
-   - `tools` are function declarations; `response_format` is JSON with the reply schema.
-   - `generation_config.max_output_tokens` is 1600, plus `tool_choice: 'none'` when forcing a text answer. `store: false` (stateless).
-   - No `service_tier`. SDK retries are off (`retries: {strategy: 'none'}`), with a 45-second per-call timeout.
-4. Tool loop (maximum 5 rounds). The model's own steps (thoughts with signatures, function calls) are resent exactly as received, followed by `function_result` steps. Tools are offered in a round only if the previous round did something useful, and the final round always forces text.
-5. Final output is parsed and validated: source ids are filtered to the knowledge base (maximum 4), there are at most 4 suggestions, and the reply is capped at 4,000 characters.
-6. **Figure check:** every `$` amount in the reply must appear in a trusted source: customer messages, stated facts, snapshot, knowledge base or tool results. Otherwise the model gets one revision request ("never do arithmetic yourself").
-7. **Deadline:** 60 seconds per turn, enforced in our own code even if the SDK ignores the abort signal. The browser aborts after 65 seconds.
-8. **Errors** are mapped by `toAiError`. Provider messages are never passed through or logged:
+The rule checks, in order:
+1. **Data sufficiency.** Closing balances exist for ≥ 95% of the 90 days ending today, the earliest is within 2 days of the window start, and today is present. Otherwise the status is `insufficient_data`.
+2. **Review flag.** If synthetic activity is flagged as unusual or incomplete, the status is `suppressed_review`.
+3. **Threshold.** Every daily closing chequing balance in the window must be ≥ the threshold. Otherwise the status is `not_met`.
+4. **Earmark.** If the customer said the money is already set aside, the status is `suppressed_earmarked` (permanent for this scenario).
+5. **Snooze.** If the customer chose “Not now”, the status is `suppressed_dismissed` for 30 simulated days.
 
-   | Error | HTTP | Message to customer |
-   |---|---|---|
-   | `not_configured` | 503 | Explains where to put the key |
-   | Invalid key (`auth_error`) | 502 | Check `GEMINI_API_KEY` |
-   | Quota exhausted (`rate_limited`) | 429 | Free-tier limit reached; per-minute vs. daily reset |
-   | Google "high demand" | 502 | Temporary; try again or change `GEMINI_MODEL` |
-   | Missing model | 502 | Check `GEMINI_MODEL` |
-   | Timeout | 504 | Took too long; try again |
-   | Connection failure | 502 | Check the internet connection |
+Otherwise the status is `qualifies`. The dashboard also won’t repeat the opportunity nudge once the customer has engaged with it (allocations, goal or next step from a nudge conversation), because continuity moves to check-ins (`engagedWithNudge`).
 
-## Tools (`server/tools.ts`)
+**The signal only identifies a reason to ask a question.** It never sets an amount, suitability or a product. Evidence includes the window dates, days with data, coverage, min/max/average balance, days below the threshold and the current balance.
 
-| Tool | Validation | Effect for the client |
-|---|---|---|
-| `read_account_snapshot` | Only if permission is granted; otherwise returns `permission_required` | none |
-| `request_snapshot_permission` | Only when the latest message asks about the customer's own numbers; not repeated after a decline unless the customer raises it | `requestSnapshotPermission` → Allow / Not now buttons |
-| `propose_fact_update` | `customer_quote` must come from the latest customer message (verbatim, or a light paraphrase whose meaningful words and numbers all appear in it); the value must appear in it, or be derived from the snapshot ("keep $10,000" → 24,000 − 10,000); negatives, zero targets and invalid months are rejected; amounts above the snapshot balance return `needs_clarification` unless the customer explicitly said the money is held elsewhere | `factsUpdated` |
-| `calculate_scenario` | Uses stated facts; what-if values must appear in a customer message (marked hypothetical); missing facts → `missing_information`; invalid values are rejected | `scenario` |
-| `prepare_summary` / `prepare_support_preview` | Only when the customer asked for a summary or a person; questions are trimmed (at most 5, 200 characters each) | `summaryReady` / `handoffReady` → buttons |
+Synthetic histories (`domain/history.ts`): pay on the 1st and 15th, rent on the 1st, bills on the 5th and 20th, a monthly transfer to savings on the 16th, and seeded variable spending. Balances are anchored to the scenario’s “today” and computed forwards and backwards, so each closing balance = previous + that day’s transactions (tested). Alex: income $5,200/mo, expenses $3,600/mo, $1,200/mo to savings. Chequing stays between about $26,000 and $29,700 over the window; it is $28,000 today and savings is $12,000. 240 days are generated, so later visits have data.
 
-Recording `reservedSeparately` with the snapshot granted also sets `homeSavings = savings − reserve` in code, and vice versa, so the model never has to do that arithmetic. The client applies effects in `engine.ts` (`aiTurn`) and **re-validates** them with the same `checkFactValue` rules and the snapshot balance check, so even a faulty server could not apply a negative or over-balance value. Scenario cards are recalculated by `calc.ts` on render.
+## Allocations (`src/domain/allocations.ts`)
 
-## State model (`src/conversation/types.ts`)
+- Balances come from accounts. **Allocations** are customer-stated purposes for part of one account’s balance (`upcoming_expenses`, `emergency`, `tuition`, `debt_repayment`, `other`).
+- One allocation per account and purpose; a correction **replaces** it, so nothing is double-counted. An account’s allocations can’t exceed its balance; otherwise Sunny asks for clarification and nothing is saved.
+- **Not yet assigned** = balance − allocations (never negative). It is always described as “not yet assigned to a purpose”, never “available to invest”. Savings isn’t added to the chequing discussion.
 
-- `mode`: `ai` or `scripted`. It changes only via the startup status check, Demo settings, or the customer choosing *Use scripted demo instead*. Mode changes mid-conversation are announced in the chat.
-- `facts`: customer-stated only (target, home savings, reserved separately, monthly amount, timeline, held-elsewhere flag), plus `dataSource` as the permission record. Account balances stay in `profile` and are never modified.
-- `permissionPending`, `suggestions`: AI-mode controls.
-- `messages`: `ai` marks model text (rendered with light formatting by `RichText`); `sources` holds validated ids; `local` marks messages that are never sent to the model (errors, cards, mode notes).
-- `sourcesCited`, `topicsExplored`: feed the summary's topics and sources.
-- `pending`, `resumeStep`, `step`: scripted clarification and goal flow.
+## State (`src/conversation/types.ts`)
 
-## Knowledge base (`src/shared/knowledge.ts`)
+- `profile`: the synthetic relationship. `todayIndex`: the simulated day. `signalConfig`. `mode` (`ai` | `scripted`). `view`. `stage` (scripted flow). `origin` (`nudge` | `self` | `checkin`).
+- `memory` (persisted per scenario in localStorage; synthetic only):
+  - `permission`, `allocations`, `goal` (type + the customer’s words), `horizon`, `nextStep`, `prompt` (what started it)
+  - `topicsExplored`, `offeringsViewed`, `sourcesCited`, `supportQuestions`, `scenario`
+  - `prefs` (`earmarked`, `dismissedUntil`, `checkinsStopped`, `remindAfter`), `lastConversationDay`, `visit`
+- Messages are never persisted; a later visit starts a fresh conversation using memory.
+- **Check-in** (`pendingCheckin`) appears only when there’s a saved next step other than “Not right now”, check-ins aren’t stopped or snoozed, and it’s a later simulated day than the last conversation. Its text comes from the saved next step and goal.
+- Reset: “Reset this scenario” removes that scenario’s memory and time; “Reset all demo data” clears the storage key `sunny-demo-v2`.
 
-Each entry has: `id`, `topic`, `content`, `publisher`, `pageTitle`, exact `url`, `reviewed` date, `kind` (`tangerine` or `general`), `conditions`, `openQuestions` and `keywords`. To update it, re-check the page, edit the entry, update `reviewed` and CONTENT_SOURCES.md, then run `npm test`. There is no runtime web fetching.
+## Conversation logic
 
-## Calculations (`src/lib/calc.ts`)
+- **Scripted** (`engine.ts`, `script.ts`, `intents.ts`, `prompts.ts`): permission → purpose (natural-language allocation parsing) → confirm → goal → education plus one follow-up (horizon) → offerings → next step → optional scenario → summary. Education detours (22 topics in `data/education.ts`) are possible at any stage and keep progress.
+- **AI** (`server/prompt.ts`, `server/tools.ts`): the opening and the permission question are local and deterministic in both modes. After that, Gemini answers, using tools that the app validates:
 
-`gap = max(0, target − start)`, `total = start + monthly × months`, `remainingGap = max(0, target − total)` and `requiredMonthly = ceil(gap / months)`. Inputs are validated: amounts must be finite and between 0 and $10M, and months must be whole numbers from 1 to 360. There is no interest, return, fee or tax modelling. `src/lib/parse.ts` extracts amounts **with their sign** and durations; it is used to ground model proposals and by the scripted interpreter.
+| Tool | Validation |
+|---|---|
+| `record_allocation` | Quote from the latest message; amount in the quote; not negative; ≤ balance (when shared) |
+| `record_goal` / `record_time_horizon` / `record_next_step` | Quote from the latest message **and** words expressing that choice (a live test found the model recording a next step the customer hadn’t chosen) |
+| `show_offerings` | Only real offering ids; only after a goal or when asked about options |
+| `calculate_scenario` | Values from customer messages or computed allocations; contributions only, no returns |
+| `read_account_snapshot` / `request_account_permission` | Only with permission / only for personal-number questions |
+| `prepare_summary` / `prepare_support_preview` | Only when the customer asks |
 
-## Security notes
+Server-side checks also include: source ids validated against the knowledge base; inline citations stripped; any `$` figure not traceable to customer text, context, the knowledge base, offerings or tool results triggers one revision; tools are withheld after a round of declined calls; a 60-second turn deadline; a per-client rate limit on the hosted server.
 
-- The key is read only on the server (`.env.local`, mode 600). It is never in prompts, inputs, responses or logs, and never in the bundle (verified with the real key).
-- Prototype data rule: only synthetic customer data and public sources. Free-tier content may be used by Google to improve its products.
-- Customer text and knowledge are passed as data, separate from `instructions`, and the instructions tell the model to ignore override attempts. The model has no tools that reveal configuration.
-- The request body is limited to 64 KB, and the tool loop and output size are bounded.
+## Provider
 
-## Live testing notes (2026-10-21, `gemini-3.5-flash-lite`)
+Google Gemini via the official `@google/genai` SDK (Interactions API, stateless `store: false`, retries off), in `server/geminiClient.ts`.
+- Configuration: `GEMINI_API_KEY` and `GEMINI_MODEL` (default `gemini-3.5-flash-lite`, free tier) in `.env.local`.
+- `server/chat.ts` is provider-neutral; another provider would need only a new adapter.
+- Errors map to safe messages (quota 429, high demand 503, auth, timeout, connection), shown with **Try again** and an explicit **Use scripted demo instead**.
 
-Problems found only with the real model, and how they were fixed:
-1. It requested snapshot permission and support previews on general questions → intent guards in `tools.ts`.
-2. It looped on declined tools until the round limit (failing the turn and wasting quota) → forced text answer.
-3. It did arithmetic itself after `missing_information` → the figure check, plus a prompt rule.
-4. A reserve correction left home savings unchanged, so the card and text disagreed → deterministic allocation.
-5. It ran an unrequested what-if that replaced the stated scenario → what-if values must be customer-given.
-6. It paraphrased quotes ("all my savings") → tolerant but strict quote matching.
-7. It recorded one fact per round and ran out of rounds → prompt asks for parallel calls; 5 rounds.
+## Live AI testing (2026-10-24, `gemini-3.5-flash-lite`)
 
-Turn your own diagnostics on with `SUNNY_DEBUG_TOOLS=1 npm run dev`. The server then logs tool names and statuses only, never content or keys.
+Through the real local API, with Alex’s context and permission granted:
+- **Allocations:** recorded correctly, with $15,000 not yet assigned computed in code.
+- **Goal and offerings:** the goal was recorded and offerings were shown (savings, TFSA, funds) with the “not the only options” wording.
+- **Horizon:** recorded.
+- **“Can I lose money?”:** answered with sources.
+- **“Should I just invest the $15,000?”:** declined to decide and offered options or questions for an advisor.
+- **Next step:** recorded “learn about investment risk first”.
+- **Defect found and fixed:** the model recorded an unchosen next step; the meaning check was added.
 
-To re-verify: run `npm run ai:check`, then Demo settings → Test AI connection, then the README example questions. Pace messages to stay within free-tier per-minute limits.
+One request hit Google’s 503 “high demand” and was handled correctly. Live AI was not re-run end to end in the browser after the final fixes (to conserve free-tier quota). The browser UI was checked end to end in scripted mode, and AI-mode UI paths are covered by mocked tests.
 
-## Future (not implemented)
+## Prototype vs. production (future work)
 
-Embedding-based retrieval and a content-owner workflow for the knowledge base; persistence; a real human-handoff channel; streaming responses; moving `server/http.ts` to a deployable service with authentication and rate limiting; French content.
+- **Data:** real transaction pipelines, data-quality flags and review rules in place of `reviewFlag`, and validated thresholds with A/B evaluation.
+- **Consent:** durable consent records, purpose limitation, retention and audit.
+- **Engagement:** real scheduling, notification preferences, frequency caps and opt-out across channels. The prototype has **no background monitoring and no real reminders**.
+- **Products:** live, approved product content; eligibility and suitability processes; real handoff to Tangerine Advisors.
+- **AI:** enterprise model hosting, evaluation sets (including the README questions), red-teaming, monitoring, and compliance sign-off of prompts and tools.
+- **More signal rules** (e.g. a payroll change or a debt paid off, from the original decision tree), each needing the same signal → ask → confirm pattern.

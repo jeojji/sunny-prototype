@@ -1451,3 +1451,321 @@ textarea {
     print-color-adjust: exact;
   }
 }
+
+/* ---------- Wealth pivot: dashboard ---------- */
+.dash-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.as-of {
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+.insight {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+  background: linear-gradient(120deg, var(--white) 45%, var(--orange-50));
+  border: 1px solid var(--orange-100);
+  border-radius: 20px;
+  padding: 24px 28px;
+  box-shadow: var(--shadow);
+}
+.insight-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.insight-title {
+  font-size: 1.3rem;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+  font-weight: 600;
+}
+.insight-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.insight-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  grid-template-columns: none;
+}
+.insight-notice p {
+  flex: 1;
+}
+.why summary {
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--orange-700);
+  width: fit-content;
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+.why p {
+  margin-top: 8px;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+  max-width: 70ch;
+}
+.trend {
+  margin: 12px 0 0;
+}
+.trend svg {
+  width: 100%;
+  height: 64px;
+  display: block;
+}
+.trend-line {
+  fill: none;
+  stroke: var(--orange-600);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+.trend-fill {
+  fill: var(--orange-50);
+}
+.trend-threshold {
+  stroke: var(--ink-soft);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+}
+.trend figcaption {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+  margin-top: 4px;
+}
+.goal-chip {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.goal-chip-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+.goal-chip-value {
+  font-weight: 600;
+  color: var(--charcoal);
+}
+.goal-chip-next {
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+.activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.activity-list li {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.92rem;
+  align-items: center;
+}
+.activity-list li:last-child {
+  border-bottom: 0;
+}
+.activity-date {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+.activity-desc {
+  display: grid;
+  min-width: 0;
+}
+.activity-account {
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+}
+.activity-amount {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--charcoal);
+}
+.activity-amount.is-in {
+  color: var(--green);
+}
+.ask-sunny {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+}
+.ask-sunny p {
+  flex: 1 1 220px;
+  color: var(--ink-soft);
+}
+
+/* ---------- Wealth pivot: cards ---------- */
+.fact-strong dd,
+.fact-strong dt {
+  font-weight: 700;
+  color: var(--charcoal);
+}
+.alloc-bar {
+  display: flex;
+  height: 14px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #efe8e0;
+}
+.alloc-seg {
+  height: 100%;
+}
+.alloc-upcoming_expenses {
+  background: #8a7f76;
+}
+.alloc-emergency {
+  background: var(--charcoal);
+}
+.alloc-tuition,
+.alloc-debt_repayment,
+.alloc-other {
+  background: #b9b0a7;
+}
+.alloc-unassigned {
+  background: repeating-linear-gradient(-45deg, var(--orange-500), var(--orange-500) 4px, #f9a565 4px, #f9a565 8px);
+}
+.alloc-card .key {
+  width: 10px;
+}
+.offerings-reason {
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+}
+.offerings {
+  display: grid;
+  gap: 8px;
+}
+.offering {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--white);
+}
+.offering summary {
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+}
+.offering summary span {
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+.offering-body {
+  padding: 0 12px 12px;
+  font-size: 0.88rem;
+  display: grid;
+  gap: 4px;
+}
+.offering-h {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-soft);
+  margin-top: 6px;
+}
+.offering-body ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.offering-links {
+  margin-top: 6px;
+}
+.signal-card .figures {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.multi-amount {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: flex-end;
+}
+.amount-row-labelled {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 150px;
+}
+.amount-row-labelled label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--charcoal);
+}
+.amount-row-labelled .amount-field {
+  max-width: none;
+}
+.multi-amount .field-error {
+  flex-basis: 100%;
+}
+.check-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 0.82rem;
+}
+.check-list .pass span {
+  color: var(--green);
+}
+.check-list .fail span {
+  color: var(--danger);
+}
+.drawer select {
+  min-height: 40px;
+  border: 1px solid #b9b0a7;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: var(--white);
+}
+.panel-list {
+  font-size: 0.9rem;
+}
+
+@media (max-width: 720px) {
+  .insight {
+    grid-template-columns: 1fr;
+    padding: 20px 18px;
+  }
+  .insight-orb {
+    display: none;
+  }
+  .insight-title {
+    font-size: 1.1rem;
+  }
+  .signal-card .figures {
+    grid-template-columns: 1fr 1fr;
+  }
+  .activity-list li {
+    grid-template-columns: 52px minmax(0, 1fr) auto;
+    padding: 10px 12px;
+  }
+}

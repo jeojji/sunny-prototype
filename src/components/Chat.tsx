@@ -1,12 +1,13 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
-import { hasAnyGoalFact, scenarioInput } from '../conversation/engine';
-import { getPrompt, type InputSpec, type MultiSpec } from '../conversation/prompts';
-import type { ConversationState, CustomerTurn, Message, NextStepId, SunnyEvent } from '../conversation/types';
+import { hasPlan, signalFor } from '../conversation/engine';
+import { getPrompt, type AllocationFormSpec, type ScenarioFormSpec } from '../conversation/prompts';
+import type { ConversationState, CustomerTurn, Message, SunnyEvent } from '../conversation/types';
 import type { OrbMode } from '../conversation/useSunny';
-import { MAX_MONTHS, isValidAmount, isValidMonths, parseAmount } from '../lib/calc';
+import type { Purpose } from '../domain/allocations';
+import { isValidAmount, isValidMonths, MAX_MONTHS, parseAmount } from '../lib/calc';
 import { LIMITS } from '../shared/api';
-import { EducationCard, FactsUpdatedCard, ScenarioCard, SnapshotCard, SourceList } from './Cards';
-import { GoalPanel } from './GoalPanel';
+import { AllocationCard, EducationCard, FactsUpdatedCard, OfferingsCard, ScenarioCard, SignalCard, SourceList } from './Cards';
+import { PlanPanel } from './PlanPanel';
 import { RichText } from './RichText';
 import { SunnyOrb } from './SunnyOrb';
 
@@ -26,11 +27,10 @@ export function Chat({ state, orb, thinking, pendingSay, send, sendText, dispatc
   const logRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const prompt = getPrompt(state);
-  const current = scenarioInput(state.facts);
-  const showPanel = hasAnyGoalFact(state.facts);
+  const showPanel = hasPlan(state);
   const slow = useSlowFlag(thinking, 9000);
+  const currentScenario = state.memory.scenario ? JSON.stringify(state.memory.scenario) : '';
 
-  // Keep the newest message in view, after layout.
   useEffect(() => {
     const el = logRef.current;
     if (!el) return;
@@ -38,14 +38,11 @@ export function Chat({ state, orb, thinking, pendingSay, send, sendText, dispatc
     return () => cancelAnimationFrame(frame);
   }, [state.messages.length, pendingSay, thinking]);
 
-  // If the control the customer used disappeared, move focus to the new controls.
   useEffect(() => {
     if (thinking) return;
     const active = document.activeElement;
-    if (!active || active === document.body) {
-      controlsRef.current?.querySelector<HTMLElement>('input, button')?.focus();
-    }
-  }, [thinking, state.step, state.messages.length]);
+    if (!active || active === document.body) controlsRef.current?.querySelector<HTMLElement>('input, button')?.focus();
+  }, [thinking, state.stage, state.messages.length]);
 
   return (
     <main className={`chat-layout${showPanel ? ' has-panel' : ''}`} id="main">
@@ -55,7 +52,7 @@ export function Chat({ state, orb, thinking, pendingSay, send, sendText, dispatc
           <div className="chat-head-text">
             <h1 className="chat-title">Sunny</h1>
             <p className="chat-status" aria-live="polite">
-              {thinking ? 'Thinking…' : 'Saving for your first home'}
+              {thinking ? 'Thinking…' : 'Your money, your goals'}
             </p>
           </div>
           {state.mode === 'scripted' && (
@@ -67,8 +64,8 @@ export function Chat({ state, orb, thinking, pendingSay, send, sendText, dispatc
 
         {showPanel && (
           <details className="panel-mobile">
-            <summary>Your goal at a glance</summary>
-            <GoalPanel state={state} dispatch={dispatch} disabled={thinking} />
+            <summary>Your plan so far</summary>
+            <PlanPanel state={state} />
           </details>
         )}
 
@@ -79,7 +76,7 @@ export function Chat({ state, orb, thinking, pendingSay, send, sendText, dispatc
               message={m}
               showAvatar={m.role === 'sunny' && state.messages[i - 1]?.role !== 'sunny'}
               state={state}
-              currentKey={current ? JSON.stringify(current) : ''}
+              currentScenario={currentScenario}
               onOpen={(view) => dispatch({ type: 'setView', view })}
               onRetry={onRetry}
               onUseScripted={onUseScripted}
@@ -110,19 +107,14 @@ export function Chat({ state, orb, thinking, pendingSay, send, sendText, dispatc
         <div className="chat-controls" ref={controlsRef}>
           {!thinking && (
             <>
-              {prompt.multi && <MultiSelect spec={prompt.multi} onSubmit={(ids) => send(prompt.multi!.toTurn(ids))} />}
-              {prompt.input && (
-                <AmountForm key={`${state.step}-${state.seq}`} spec={prompt.input} onSubmit={(n) => send(prompt.input!.toTurn(n))} />
+              {prompt.allocationForm && (
+                <AllocationForm key={`alloc-${state.seq}`} spec={prompt.allocationForm} onSubmit={(v) => send(prompt.allocationForm!.toTurn(v))} />
               )}
+              {prompt.scenarioForm && <ScenarioForm key={`scen-${state.seq}`} spec={prompt.scenarioForm} onSubmit={(t) => send(t)} />}
               {prompt.replies.length > 0 && (
                 <div className="quick-replies" role="group" aria-label="Suggested replies">
                   {prompt.replies.map((r) => (
-                    <button
-                      key={r.label}
-                      type="button"
-                      className={`chip${r.primary ? ' chip-primary' : ''}`}
-                      onClick={() => send(r.turn)}
-                    >
+                    <button key={r.label} type="button" className={`chip${r.primary ? ' chip-primary' : ''}`} onClick={() => send(r.turn)}>
                       {r.label}
                     </button>
                   ))}
@@ -135,15 +127,14 @@ export function Chat({ state, orb, thinking, pendingSay, send, sendText, dispatc
       </section>
 
       {showPanel && (
-        <aside className="panel-desktop" aria-label="Your goal at a glance" id="goal-panel">
-          <GoalPanel state={state} dispatch={dispatch} disabled={thinking} />
+        <aside className="panel-desktop" aria-label="Your plan so far" id="plan-panel">
+          <PlanPanel state={state} />
         </aside>
       )}
     </main>
   );
 }
 
-/** True once `active` has stayed true for `ms`. */
 function useSlowFlag(active: boolean, ms: number) {
   const [slow, setSlow] = useState(false);
   useEffect(() => {
@@ -161,7 +152,7 @@ function MessageRow({
   message,
   showAvatar,
   state,
-  currentKey,
+  currentScenario,
   onOpen,
   onRetry,
   onUseScripted,
@@ -171,7 +162,7 @@ function MessageRow({
   message: Message;
   showAvatar: boolean;
   state: ConversationState;
-  currentKey: string;
+  currentScenario: string;
   onOpen: (view: 'summary' | 'handoff') => void;
   onRetry: () => void;
   onUseScripted: () => void;
@@ -187,19 +178,15 @@ function MessageRow({
         {message.text && (
           <>
             <span className="visually-hidden">{sunny ? 'Sunny said:' : 'You said:'}</span>
-            <div className="bubble">
-              {sunny ? <RichText text={message.text} /> : message.text}
-            </div>
+            <div className="bubble">{sunny ? <RichText text={message.text} /> : message.text}</div>
           </>
         )}
         {card?.kind === 'education' && <EducationCard topic={card.topic} />}
-        {card?.kind === 'snapshot' && <SnapshotCard profile={state.profile} />}
+        {card?.kind === 'signal' && <SignalCard signal={signalFor(state)} observationDays={state.signalConfig.observationDays} />}
+        {card?.kind === 'allocations' && <AllocationCard snapshot={card.snapshot} />}
+        {card?.kind === 'offerings' && <OfferingsCard ids={card.ids} reason={card.reason} />}
         {card?.kind === 'scenario' && (
-          <ScenarioCard
-            snapshot={{ ...card.snapshot }}
-            hypothetical={card.hypothetical}
-            outdated={JSON.stringify({ ...card.snapshot }) !== currentKey}
-          />
+          <ScenarioCard input={card.input} hypothetical={card.hypothetical} outdated={JSON.stringify(card.input) !== currentScenario} />
         )}
         {card?.kind === 'factsUpdated' && <FactsUpdatedCard changes={card.changes} />}
         {card?.kind === 'action' && (
@@ -239,49 +226,53 @@ function MessageRow({
   );
 }
 
-function AmountForm({ spec, onSubmit }: { spec: InputSpec; onSubmit: (n: number) => void }) {
-  const id = useId();
-  const [value, setValue] = useState(spec.initial !== null ? String(spec.initial) : '');
-  const [error, setError] = useState<string | null>(null);
-  const isMonths = spec.kind === 'months';
+function readAmount(raw: string): number | 'negative' | 'invalid' | null {
+  const t = raw.trim();
+  if (!t) return null;
+  if (/^[-−]/.test(t.replace(/^\$/, ''))) return 'negative';
+  const n = parseAmount(t);
+  return n === null || !isValidAmount(n) ? 'invalid' : n;
+}
 
+function AllocationForm({ spec, onSubmit }: { spec: AllocationFormSpec; onSubmit: (v: Partial<Record<Purpose, number>>) => void }) {
+  const id = useId();
+  const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(spec.fields.map((f) => [f.purpose, f.initial !== null ? String(f.initial) : ''])));
+  const [error, setError] = useState<string | null>(null);
   function submit(e: FormEvent) {
     e.preventDefault();
-    const trimmed = value.trim();
-    if (/^[-−]/.test(trimmed.replace(/^\$/, ''))) return setError('Amounts can’t be negative. Enter $0 or more.');
-    const n = isMonths ? Number(trimmed) : parseAmount(trimmed);
-    if (isMonths) {
-      if (!isValidMonths(n)) return setError(`Enter a whole number of months from 1 to ${MAX_MONTHS}.`);
-    } else if (n === null || !isValidAmount(n)) {
-      return setError('Enter a dollar amount of $0 or more.');
-    } else if (!spec.allowZero && n <= 0) {
-      return setError('Enter an amount greater than $0.');
+    const out: Partial<Record<Purpose, number>> = {};
+    for (const f of spec.fields) {
+      const v = readAmount(values[f.purpose] ?? '');
+      if (v === 'negative') return setError('Amounts can’t be negative. Enter $0 or more.');
+      if (v === 'invalid') return setError('Enter dollar amounts, like 3000.');
+      if (v !== null) out[f.purpose] = v;
     }
     setError(null);
-    onSubmit(n as number);
+    onSubmit(out);
   }
-
   return (
-    <form className="amount-form" onSubmit={submit} noValidate>
-      <label htmlFor={id}>{spec.label}</label>
-      <div className="amount-row">
-        <div className={`amount-field${isMonths ? ' is-months' : ''}`}>
-          {!isMonths && <span aria-hidden="true">$</span>}
-          <input
-            id={id}
-            inputMode={isMonths ? 'numeric' : 'decimal'}
-            autoComplete="off"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            aria-invalid={error ? true : undefined}
-            aria-describedby={error ? `${id}-err` : undefined}
-          />
-          {isMonths && <span aria-hidden="true">months</span>}
+    <form className="amount-form multi-amount" onSubmit={submit} noValidate>
+      {spec.fields.map((f) => (
+        <div key={f.purpose} className="amount-row-labelled">
+          <label htmlFor={`${id}-${f.purpose}`}>{f.label}</label>
+          <div className="amount-field">
+            <span aria-hidden="true">$</span>
+            <input
+              id={`${id}-${f.purpose}`}
+              inputMode="decimal"
+              autoComplete="off"
+              value={values[f.purpose]}
+              placeholder="0"
+              onChange={(e) => setValues((v) => ({ ...v, [f.purpose]: e.target.value }))}
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? `${id}-err` : undefined}
+            />
+          </div>
         </div>
-        <button type="submit" className="btn btn-primary">
-          {spec.submitLabel}
-        </button>
-      </div>
+      ))}
+      <button type="submit" className="btn btn-primary">
+        {spec.submitLabel}
+      </button>
       {error && (
         <p className="field-error" id={`${id}-err`} role="alert">
           {error}
@@ -291,22 +282,54 @@ function AmountForm({ spec, onSubmit }: { spec: InputSpec; onSubmit: (n: number)
   );
 }
 
-function MultiSelect({ spec, onSubmit }: { spec: MultiSpec; onSubmit: (ids: NextStepId[]) => void }) {
-  const [selected, setSelected] = useState<NextStepId[]>(spec.selected);
-  const toggle = (id: NextStepId) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+function ScenarioForm({ spec, onSubmit }: { spec: ScenarioFormSpec; onSubmit: (t: CustomerTurn) => void }) {
+  const id = useId();
+  const init = spec.initial;
+  const [v, setV] = useState({
+    start: init.start !== null ? String(init.start) : '',
+    monthly: init.monthly !== null ? String(init.monthly) : '',
+    months: String(init.months),
+    target: init.target !== null ? String(init.target) : '',
+  });
+  const [error, setError] = useState<string | null>(null);
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    const start = readAmount(v.start || '0');
+    const monthly = readAmount(v.monthly || '0');
+    const target = v.target.trim() ? readAmount(v.target) : null;
+    const months = Number(v.months.trim());
+    if ([start, monthly, target].includes('negative')) return setError('Amounts can’t be negative.');
+    if ([start, monthly, target].includes('invalid')) return setError('Enter dollar amounts, like 400.');
+    if (!isValidMonths(months)) return setError(`Enter a whole number of months from 1 to ${MAX_MONTHS}.`);
+    if (target !== null && target === 0) return setError('Leave the target blank, or enter more than $0.');
+    setError(null);
+    onSubmit(spec.toTurn({ start: start as number, monthly: monthly as number, months, target: target as number | null }));
+  }
+  const field = (k: keyof typeof v, label: string, prefix = true, suffix?: string) => (
+    <div className="amount-row-labelled">
+      <label htmlFor={`${id}-${k}`}>{label}</label>
+      <div className="amount-field">
+        {prefix && <span aria-hidden="true">$</span>}
+        <input id={`${id}-${k}`} inputMode="decimal" autoComplete="off" value={v[k]} onChange={(e) => setV((x) => ({ ...x, [k]: e.target.value }))} />
+        {suffix && <span aria-hidden="true">{suffix}</span>}
+      </div>
+    </div>
+  );
   return (
-    <fieldset className="multi">
-      <legend>Next steps</legend>
-      {spec.options.map((o) => (
-        <label key={o.id} className="check">
-          <input type="checkbox" checked={selected.includes(o.id)} onChange={() => toggle(o.id)} />
-          <span>{o.label}</span>
-        </label>
-      ))}
-      <button type="button" className="btn btn-primary" onClick={() => onSubmit(selected)} disabled={selected.length === 0}>
-        {spec.submitLabel}
+    <form className="amount-form multi-amount" onSubmit={submit} noValidate>
+      {field('start', 'Starting amount')}
+      {field('monthly', 'Monthly amount')}
+      {field('months', 'Months', false, 'months')}
+      {field('target', 'Target (optional)')}
+      <button type="submit" className="btn btn-primary">
+        Show the arithmetic
       </button>
-    </fieldset>
+      {error && (
+        <p className="field-error" role="alert">
+          {error}
+        </p>
+      )}
+    </form>
   );
 }
 
@@ -324,14 +347,7 @@ function Composer({ disabled, onSend }: { disabled: boolean; onSend: (text: stri
       <label htmlFor={id} className="visually-hidden">
         Message Sunny
       </label>
-      <input
-        id={id}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="Ask anything about saving for your first home…"
-        autoComplete="off"
-        maxLength={LIMITS.maxCustomerChars}
-      />
+      <input id={id} value={text} onChange={(e) => setText(e.target.value)} placeholder="Ask Sunny anything about saving, investing or Tangerine…" autoComplete="off" maxLength={LIMITS.maxCustomerChars} />
       <button type="submit" className="btn btn-dark" disabled={disabled || !text.trim()} aria-label="Send message">
         <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18">
           <path fill="currentColor" d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z" />

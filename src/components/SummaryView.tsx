@@ -1,123 +1,78 @@
 import { buildSummary } from '../conversation/summary';
-import { NEXT_STEP_LABEL } from '../conversation/script';
-import type { ConversationState, NextStepId, SunnyEvent } from '../conversation/types';
-import { horizon, money } from '../lib/format';
-import { SavingsBar } from './Cards';
-import { scenarioInput } from '../conversation/engine';
+import type { ConversationState, SunnyEvent } from '../conversation/types';
+import { money } from '../lib/format';
+import { AllocationCard, formatDate, ScenarioCard } from './Cards';
 
 interface Props {
   state: ConversationState;
   dispatch: (event: SunnyEvent) => void;
-  onEditAssumptions: () => void;
   onRestart: () => void;
 }
 
-const prepared = new Intl.DateTimeFormat('en-CA', { dateStyle: 'long' });
-
-export function SummaryView({ state, dispatch, onEditAssumptions, onRestart }: Props) {
+export function SummaryView({ state, dispatch, onRestart }: Props) {
   const s = buildSummary(state);
-  const input = scenarioInput(state.facts);
-  const r = s.result;
-  const notSet = 'Not confirmed yet';
+  const notYet = <span className="muted">Not discussed yet</span>;
 
   return (
     <main className="page summary" id="main">
       <div className="page-head">
-        <p className="eyebrow">Prepared with Sunny · {prepared.format(new Date())}</p>
-        <h1>Your home-saving conversation</h1>
-        <p className="lede">
-          A record of what {s.firstName} confirmed and explored. Educational information only; no decisions were made for you.
-        </p>
+        <p className="eyebrow">Prepared with Sunny · {formatDate(s.asOf)} (simulated date)</p>
+        <h1>Your conversation with Sunny</h1>
+        <p className="lede">What {s.firstName} confirmed, explored and chose. Educational information only; no decisions were made for you, and nothing was opened, moved or booked.</p>
       </div>
 
       <div className="page-grid">
-        <section className="panel-card" aria-labelledby="sum-goal">
-          <h2 id="sum-goal">Goal and starting point</h2>
+        <section className="panel-card" aria-labelledby="sum-prompt">
+          <h2 id="sum-prompt">What prompted this</h2>
+          <p>{s.prompted}</p>
           <dl className="facts">
             <div className="fact">
-              <dt>Confirmed goal</dt>
-              <dd>{s.goal}</dd>
-            </div>
-            <div className="fact">
-              <dt>Timeline</dt>
-              <dd>{s.timeline ?? notSet}</dd>
-            </div>
-            <div className="fact">
-              <dt>Starting savings for this goal</dt>
-              <dd>
-                {s.startingSavings !== null ? money(s.startingSavings) : notSet}
-                {s.heldElsewhere ? ' (includes money held elsewhere)' : ''}
-              </dd>
-            </div>
-            <div className="fact">
-              <dt>Kept separately</dt>
-              <dd>
-                {s.reservedSeparately === null
-                  ? 'Not discussed'
-                  : s.reservedSeparately > 0
-                    ? `${money(s.reservedSeparately)} for emergencies`
-                    : 'None'}
-              </dd>
-            </div>
-            <div className="fact">
-              <dt>Self-selected target</dt>
-              <dd>{s.target !== null ? money(s.target) : notSet}</dd>
-            </div>
-            <div className="fact">
               <dt>Information used</dt>
-              <dd>{s.dataSource}</dd>
+              <dd>{s.dataUsed}</dd>
+            </div>
+            <div className="fact">
+              <dt>Chequing / savings today</dt>
+              <dd>
+                {money(s.balances.chequing)} / {money(s.balances.savings)}
+              </dd>
             </div>
           </dl>
         </section>
 
-        <section className="panel-card" aria-labelledby="sum-scenario">
-          <h2 id="sum-scenario">Monthly-saving scenario explored</h2>
-          {input && r?.valid ? (
-            <>
-              <p className="scenario-line">
-                {input.monthly > 0 ? (
-                  <>
-                    <strong>{money(input.monthly)} a month</strong> for {horizon(input.months)}
-                  </>
-                ) : (
-                  <>No monthly amount for now</>
-                )}
-              </p>
-              <SavingsBar input={input} />
-              <dl className="facts">
-                <div className="fact">
-                  <dt>Total after {input.months} months</dt>
-                  <dd>{money(r.projectedTotal)}</dd>
-                </div>
-                <div className="fact">
-                  <dt>{r.targetAlreadyReached ? 'Target' : r.amountAboveTarget > 0 ? 'Above target' : 'Remaining gap'}</dt>
-                  <dd>
-                    {r.targetAlreadyReached
-                      ? 'Already reached'
-                      : money(r.amountAboveTarget > 0 ? r.amountAboveTarget : r.remainingGap)}
-                  </dd>
-                </div>
-                {r.requiredMonthly !== null && input.monthly > 0 && (
-                  <div className="fact">
-                    <dt>Monthly amount that would reach the target in {input.months} months</dt>
-                    <dd>{money(r.requiredMonthly)}</dd>
-                  </div>
-                )}
-              </dl>
-            </>
-          ) : (
-            <p className="muted">No scenario was explored. That’s fine: a scenario needs a timeline, target, starting savings and monthly amount, and you can add them anytime.</p>
-          )}
-          <h3>Assumptions</h3>
-          <ul className="plain-list">
-            {s.assumptions.map((a) => (
-              <li key={a}>{a}</li>
-            ))}
-          </ul>
+        <section className="panel-card" aria-labelledby="sum-confirmed">
+          <h2 id="sum-confirmed">What you confirmed</h2>
+          {s.allocationsConfirmed ? <AllocationCard snapshot={s.allocations} /> : <p className="muted">You haven’t said what any of the balance is for.</p>}
+          {state.memory.prefs.earmarked && <p>You said this money is already set aside{state.memory.prefs.earmarkNote ? ` ${state.memory.prefs.earmarkNote}` : ''}. Sunny won’t suggest exploring it again.</p>}
         </section>
 
-        <section className="panel-card" aria-labelledby="sum-topics">
-          <h2 id="sum-topics">Topics explored</h2>
+        <section className="panel-card" aria-labelledby="sum-goal">
+          <h2 id="sum-goal">Your goal</h2>
+          <dl className="facts">
+            <div className="fact">
+              <dt>Goal or learning preference</dt>
+              <dd>{s.goal ?? notYet}</dd>
+            </div>
+            {s.goalDetail && (
+              <div className="fact">
+                <dt>In your words</dt>
+                <dd>“{s.goalDetail}”</dd>
+              </div>
+            )}
+            <div className="fact">
+              <dt>When you might need the money</dt>
+              <dd>{s.horizon ?? notYet}</dd>
+            </div>
+            <div className="fact">
+              <dt>Next step you chose</dt>
+              <dd>{s.nextStep ?? notYet}</dd>
+            </div>
+          </dl>
+          {s.scenario && <ScenarioCard input={s.scenario.input} />}
+        </section>
+
+        <section className="panel-card" aria-labelledby="sum-explored">
+          <h2 id="sum-explored">Topics and offerings explored</h2>
+          <h3>Topics</h3>
           {s.topics.length ? (
             <ul className="plain-list">
               {s.topics.map((t) => (
@@ -127,43 +82,36 @@ export function SummaryView({ state, dispatch, onEditAssumptions, onRestart }: P
           ) : (
             <p className="muted">None yet.</p>
           )}
-          <h2 id="sum-questions" className="spaced">
-            Questions for further support
-          </h2>
-          {s.questions.length ? (
+          <h3>Tangerine offerings viewed</h3>
+          {s.offerings.length ? (
             <ul className="plain-list">
-              {s.questions.map((q) => (
-                <li key={q}>{q}</li>
+              {s.offerings.map((t) => (
+                <li key={t}>{t}</li>
               ))}
             </ul>
           ) : (
-            <p className="muted">
-              None yet.{' '}
-              <button type="button" className="link-button no-print" onClick={() => dispatch({ type: 'showHandoff' })}>
-                Prepare questions
-              </button>
-            </p>
+            <p className="muted">None yet.</p>
           )}
+          <p className="field-hint">Viewed to learn about, not recommended. Other institutions offer similar products.</p>
         </section>
 
-        <section className="panel-card" aria-labelledby="sum-next">
-          <h2 id="sum-next">Your next steps</h2>
-          <fieldset className="multi multi-compact no-print">
-            <legend className="field-hint">Choose any that are useful. Only selected steps are printed.</legend>
-            {(Object.keys(NEXT_STEP_LABEL) as NextStepId[]).map((id) => (
-              <label key={id} className="check">
-                <input
-                  type="checkbox"
-                  checked={state.nextSteps.includes(id)}
-                  onChange={() => dispatch({ type: 'toggleNextStep', step: id })}
-                />
-                <span>{NEXT_STEP_LABEL[id]}</span>
-              </label>
+        <section className="panel-card page-wide" aria-labelledby="sum-unknown">
+          <h2 id="sum-unknown">Still unknown</h2>
+          <ul className="plain-list">
+            {s.unknowns.map((u) => (
+              <li key={u}>{u}</li>
             ))}
-          </fieldset>
-          <ul className="plain-list print-only">
-            {s.nextSteps.length ? s.nextSteps.map((n) => <li key={n}>{n}</li>) : <li>None selected</li>}
           </ul>
+          {s.questions.length > 0 && (
+            <>
+              <h3>Questions for a person</h3>
+              <ul className="plain-list">
+                {s.questions.map((q) => (
+                  <li key={q}>{q}</li>
+                ))}
+              </ul>
+            </>
+          )}
         </section>
 
         {s.sources.length > 0 && (
@@ -172,37 +120,29 @@ export function SummaryView({ state, dispatch, onEditAssumptions, onRestart }: P
             <ul className="plain-list source-print-list">
               {s.sources.map((e) => (
                 <li key={e.id}>
-                  {e.publisher}, “{e.pageTitle}” ({e.kind === 'tangerine' ? 'Tangerine' : 'general information'}, reviewed{' '}
-                  {e.reviewed}) <span className="url">{e.url}</span>
+                  {e.publisher}, “{e.pageTitle}” ({e.kind === 'tangerine' ? 'Tangerine' : 'general information'}, reviewed {e.reviewed}) <span className="url">{e.url}</span>
                 </li>
               ))}
             </ul>
             <p className="field-hint">These public pages support Sunny’s explanations; they don’t indicate Tangerine approval of this prototype.</p>
           </section>
         )}
-
-        <section className="panel-card page-wide" aria-labelledby="sum-note">
-          <h2 id="sum-note">Conversation summary</h2>
-          <p className="note-text">{s.note}</p>
-        </section>
       </div>
 
-      <p className="concept-note">
-        Academic prototype · Synthetic data. Not an official Tangerine application, and not financial advice.
-      </p>
+      <p className="concept-note">Academic prototype · Synthetic data. Not an official Tangerine application, and not financial advice.</p>
 
       <div className="page-actions no-print">
         <button type="button" className="btn btn-secondary" onClick={() => dispatch({ type: 'setView', view: 'chat' })}>
           Return to conversation
         </button>
-        <button type="button" className="btn btn-secondary" onClick={onEditAssumptions}>
-          Edit assumptions
+        <button type="button" className="btn btn-secondary" onClick={() => dispatch({ type: 'setView', view: 'dashboard' })}>
+          Back to accounts
         </button>
         <button type="button" className="btn btn-primary" onClick={() => window.print()}>
           Print or save as PDF
         </button>
         <button type="button" className="btn btn-ghost" onClick={onRestart}>
-          Restart demo
+          Reset this demo customer
         </button>
       </div>
     </main>

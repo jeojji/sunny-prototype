@@ -3,6 +3,7 @@
  * only in the server process.
  */
 import { LIMITS, type AiErrorCode, type ChatRequest, type ChatResponse, type StatusResponse } from '../shared/api';
+import { currentBalances, signalFor } from './engine';
 import type { ConversationState } from './types';
 
 export class AiRequestError extends Error {
@@ -23,35 +24,50 @@ export async function fetchStatus(verify = false): Promise<StatusResponse> {
   }
 }
 
-/** Build the request: recent history, stated facts, and the snapshot only if permission was granted. */
+/**
+ * Build the request: recent history and customer-confirmed context; account
+ * details (balances, cash flow, signal evidence) only if permission was granted.
+ */
 export function buildChatRequest(state: ConversationState): ChatRequest {
-  const granted = state.facts.dataSource === 'snapshot';
-  const p = state.profile;
-  const f = state.facts;
+  const m = state.memory;
+  const granted = m.permission === 'granted';
+  const b = currentBalances(state);
+  const signal = signalFor(state);
   return {
-    firstName: p.firstName,
+    firstName: state.profile.firstName,
     messages: state.messages
-      .filter((m) => !m.local && m.text.trim())
+      .filter((msg) => !msg.local && msg.text.trim())
       .slice(-LIMITS.maxMessages)
-      .map((m) => ({ role: m.role, text: m.text.slice(0, LIMITS.maxMessageChars) })),
-    facts: {
-      target: f.target,
-      homeSavings: f.homeSavings,
-      reservedSeparately: f.reservedSeparately,
-      monthly: f.monthly,
-      timelineMonths: f.timelineMonths,
-      homeSavingsHeldElsewhere: f.homeSavingsHeldElsewhere,
-    },
-    snapshotPermission: f.dataSource === 'snapshot' ? 'granted' : f.dataSource === 'manual' ? 'declined' : 'not_asked',
-    snapshot: granted
+      .map((msg) => ({ role: msg.role, text: msg.text.slice(0, LIMITS.maxMessageChars) })),
+    permission: m.permission,
+    account: granted
       ? {
-          chequingBalance: p.chequingBalance,
-          savingsBalance: p.savingsBalance,
-          monthlyIncome: p.monthlyIncome,
-          monthlyExpenses: p.monthlyExpenses,
-          otherSavingsCommitments: p.otherSavingsCommitments,
+          chequingBalance: b.chequing,
+          savingsBalance: b.savings,
+          monthlyIncome: state.profile.monthlyIncome,
+          monthlyExpenses: state.profile.monthlyExpenses,
+          signal:
+            state.origin === 'nudge' || m.prompt === 'nudge'
+              ? {
+                  rule: 'elevated_chequing_balance',
+                  shown: true,
+                  observationDays: state.signalConfig.observationDays,
+                  threshold: state.signalConfig.threshold,
+                  minBalance: signal.evidence.minBalance,
+                  maxBalance: signal.evidence.maxBalance,
+                }
+              : null,
         }
       : null,
+    context: {
+      origin: state.origin,
+      allocations: m.allocations.map((a) => ({ account: a.account, purpose: a.purpose, amount: a.amount })),
+      goal: m.goal,
+      horizon: m.horizon,
+      nextStep: m.nextStep,
+      offeringsViewed: m.offeringsViewed,
+      previousNextStep: state.origin === 'checkin' ? m.nextStep : null,
+    },
   };
 }
 

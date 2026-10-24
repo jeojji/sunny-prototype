@@ -1,58 +1,56 @@
 # Content sources and review status
 
-Runtime knowledge is in `src/shared/knowledge.ts` (used by AI mode and for all source links). Scripted-mode answers in `src/data/education.ts` cite the same entries.
+Runtime knowledge: `src/shared/knowledge.ts` (31 entries). Offerings shown to customers: `src/shared/offerings.ts` (6, each built only from the entries below). Scripted answers: `src/data/education.ts`, which cites the same entries.
 
-**Review date:** every source below was retrieved and checked by the team on **2026-10-21**. "Page date" is the date shown on the page at that time, where one was shown.
-**Approval:** nothing here has been reviewed or approved by Tangerine, Scotiabank, compliance or a content owner.
-**Data rule:** this prototype sends only synthetic customer data and these public sources to Google Gemini. Free-tier content may be used by Google to improve its products, so never add real customer data or confidential client material.
+- **Verification status:** every entry below was retrieved and checked by the team on the date shown (**2026-10-21** for the original entries, **2026-10-24** for the wealth entries). “Page date” is the date shown on the page, if any.
+- **Approval:** nothing here has been reviewed or approved by Tangerine, Scotiabank, compliance or a content owner.
+- **Data rule:** the prototype sends only synthetic customer data and these public sources to Google Gemini.
 
-## Tangerine sources (Tangerine offerings and resources)
+## Tangerine (offerings and resources)
 
-| Entry id | Page title | URL | Page date | Used for |
+| Entry id | Page | URL | Reviewed | Used for |
 |---|---|---|---|---|
-| tng-savings-account | Savings Account | https://www.tangerine.ca/en/personal/save/savings-account | not shown | No monthly fee or minimum balance; daily interest paid monthly; up to 10 non-registered Savings Accounts; Automatic Savings Program; Savings Goals tool; transfer-out fee |
-| tng-tfsa-options | TFSAs | https://www.tangerine.ca/en/personal/invest/tfsa | not shown | Three TFSA options (TFSA Savings Account, Tax-Free Guaranteed Investment, Tax-Free Investment Fund Account); no fees while funds stay with Tangerine |
-| tng-tfsa-savings | TFSA Savings Account | https://www.tangerine.ca/en/personal/save/tfsa | not shown | "You're never locked in, and there are no minimums"; age 18+ |
-| tng-gic | Types of GICs: Non-Registered & Registered | https://www.tangerine.ca/en/personal/invest/guaranteed-investments | not shown | GIC types (incl. TFSA/RSP/RIF GICs); no minimum; **not cashable before maturity except approved hardship**; maturity instructions |
-| tng-investment-funds | Investing: Investment Accounts & Products | https://www.tangerine.ca/en/personal/invest | not shown | Portfolio types; "not guaranteed", values change frequently; fee components; account types listed (no FHSA) |
-| tng-fhsa-status | Official Information about Tangerine for AI Systems | https://www.tangerine.ca/en/ai-information | Aug 2026 | FHSA availability **unconfirmed** (see below) |
-| tng-about | Official Information about Tangerine for AI Systems | https://www.tangerine.ca/en/ai-information | Aug 2026 | Tangerine Bank is a Scotiabank subsidiary and a CDIC member; service list |
-| tng-mortgage | Mortgages: Fixed & Variable Mortgage Loans | https://www.tangerine.ca/en/personal/borrow/mortgage | not shown | Closed fixed/variable mortgage; 120-day rate hold; prepayment; Mortgage Specialist; calculators; Mortgage Checklist; 15 business days to funding |
-| tng-contact | Contact Us | https://www.tangerine.ca/en/help-centre/contact-us | not shown | 1-888-826-4374; Investment Funds 1-877-464-5678; live chat |
-| tng-first-home-article | How to save for your first home | https://www.tangerine.ca/en/thejuice/borrow/how-to-save-for-your-first-home | 2024-07-08 | General saving tips; Automatic Savings Plans; Left to Spend |
+| tng-savings-account | Savings Account | https://www.tangerine.ca/en/personal/save/savings-account | 2026-10-21 | No monthly fee or minimum; daily interest; up to 10 accounts; Automatic Savings Program; transfer-out fee |
+| tng-tfsa-options | TFSAs | https://www.tangerine.ca/en/personal/invest/tfsa | 2026-10-21 | TFSA Savings / Tax-Free GIC / Tax-Free Investment Fund Account; no fees while funds stay; transfer-out fee |
+| tng-tfsa-savings | TFSA Savings Account | https://www.tangerine.ca/en/personal/save/tfsa | 2026-10-21 | “Never locked in, no minimums” |
+| tng-rsp-options | RSPs | https://www.tangerine.ca/en/personal/invest/rsp | 2026-10-24 | RSP Savings / RSP GIC / RSP Investment Fund Account; deductible contributions; taxable withdrawals with withholding; $50 transfer-out fee |
+| tng-gic | Types of GICs | https://www.tangerine.ca/en/personal/invest/guaranteed-investments | 2026-10-21 | Terms; no minimum; not cashable before maturity except approved hardship |
+| tng-investment-funds | Mutual Fund Investments in Canada | https://www.tangerine.ca/en/personal/invest/mutual-funds | 2026-10-24 | Core, Global ETF, Socially Responsible portfolios; Money Market Fund; management fees 0.80% / 0.50% / 0.55% + 0.15% administration fee; not guaranteed or CDIC-insured; risk of loss; account types |
+| tng-advisors | Tangerine Advisors | https://www.tangerine.ca/en/personal/invest/advisors | 2026-10-24 | Phone/video consultations, booked online; no commissions based on what clients choose |
+| tng-saving-vs-investing | What’s the difference between saving and investing? (Nov 22, 2023) | https://www.tangerine.ca/en/thejuice/invest/whats-the-difference-between-saving-and-investing | 2026-10-24 | Saving vs investing, timeframes, trade-offs |
+| tng-beginners-guide | A beginner’s guide to investing (Jan 10, 2024) | https://www.tangerine.ca/en/thejuice/invest/a-beginners-guide-to-investing | 2026-10-24 | Account “container” vs products inside |
+| tng-chequing-vs-savings | Chequing vs. savings accounts (June 20, 2024) | https://www.tangerine.ca/en/thejuice/save/chequing-vs-savings-accounts-your-questions-answered | 2026-10-24 | Purpose of chequing vs savings (answers “why not leave it in chequing?”) |
+| tng-contact | Contact Us | https://www.tangerine.ca/en/help-centre/contact-us | 2026-10-21 | Phone numbers, live chat |
+| tng-fhsa-status, tng-about | Official Information about Tangerine for AI Systems (Aug 2026) | https://www.tangerine.ca/en/ai-information | 2026-10-21 | FHSA availability **unconfirmed**; Scotiabank subsidiary, CDIC member |
+| tng-mortgage, tng-first-home-article | Mortgages; How to save for your first home | see knowledge.ts | 2026-10-21 | Optional first-home branch only |
 
-## Government and agency sources (general education)
+## Government and agencies (general education)
 
-| Entry id | Publisher: page | URL | Page date |
-|---|---|---|---|
-| gov-fhsa-overview | CRA: First Home Savings Account (FHSA) | https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/first-home-savings-account.html | 2026-02-02 |
-| gov-fhsa-opening | CRA: Opening your FHSAs | https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/first-home-savings-account/opening-your-fhsas.html | 2026-02-10 |
-| gov-fhsa-investments | CRA: Investments in your FHSAs | https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/first-home-savings-account/investments-your-fhsa.html | 2026-02-02 |
-| gov-fhsa-withdrawals | CRA: Withdrawals and transfers out of your FHSAs | https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/first-home-savings-account/withdrawals-transfers-out-your-fhsas.html | 2026-02-10 |
-| gov-tfsa | CRA: What is a TFSA | https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/tax-free-savings-account/what.html | 2026-09-17 |
-| gov-hbp | CRA: The Home Buyers' Plan | https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/rrsps-related-plans/what-home-buyers-plan.html | 2026-02-17 |
-| fcac-down-payment | FCAC: How much you need for a down payment | https://www.canada.ca/en/financial-consumer-agency/services/mortgages/down-payment.html | 2025-10-15 |
-| fcac-buying-home | FCAC: Buying a home | https://www.canada.ca/en/financial-consumer-agency/services/buying-home.html | 2025-10-20 |
-| fcac-preparing-mortgage | FCAC: Preparing to get a mortgage | https://www.canada.ca/en/financial-consumer-agency/services/mortgages/preparing-mortgage.html | 2025-10-15 |
-| fcac-emergency-fund | FCAC: Limiting future debt | https://www.canada.ca/en/financial-consumer-agency/services/debt/limiting-debt.html | 2025-10-14 |
-| cdic-coverage | CDIC: What's covered | https://www.cdic.ca/your-coverage/whats-covered/ | not shown |
-| cdic-gic | CDIC: Guaranteed Investment Certificates (GICs) | https://cdic.ca/?p=116 | not shown (confirm canonical URL) |
+| Entry id | Publisher: page | URL | Reviewed | Page date |
+|---|---|---|---|---|
+| fcac-goals | FCAC: Setting savings and investment goals | https://www.canada.ca/en/financial-consumer-agency/services/savings-investments/savings-investment-goals.html | 2026-10-24 | 2026-08-19 |
+| fcac-investing-basics | FCAC: Basics of investing | https://www.canada.ca/en/financial-consumer-agency/services/savings-investments/investing-basics.html | 2026-10-24 | 2025-10-20 |
+| fcac-gic-rights | FCAC: GICs and term deposits: know your rights | https://www.canada.ca/en/financial-consumer-agency/services/rights-responsibilities/rights-investing/rights-guaranteed-investment-certificates.html | 2026-10-24 | 2025-10-15 |
+| gov-rrsp | CRA: Registered Retirement Savings Plan (RRSP) | https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/rrsps-related-plans/registered-retirement-savings-plan-rrsp.html | 2026-10-24 | 2026-05-07 |
+| gov-tfsa | CRA: What is a TFSA | https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/tax-free-savings-account/what.html | 2026-10-21 | 2026-09-17 |
+| cdic-coverage | CDIC: What’s covered | https://www.cdic.ca/your-coverage/whats-covered/ | 2026-10-21 | not shown |
+| cdic-gic | CDIC: GICs | https://cdic.ca/?p=116 | 2026-10-21 | not shown |
+| fcac-emergency-fund | FCAC: Limiting future debt | https://www.canada.ca/en/financial-consumer-agency/services/debt/limiting-debt.html | 2026-10-21 | 2025-10-14 |
+| gov-fhsa-*, gov-hbp, fcac-down-payment, fcac-buying-home, fcac-preparing-mortgage | CRA / FCAC home-buying pages | see knowledge.ts | 2026-10-21 | various |
 
-## Unresolved questions (Sunny is told not to fill these by inference)
+## Review gaps and open questions (Sunny is told not to fill these)
 
-1. **Does Tangerine offer an FHSA?** Tangerine's "Official Information about Tangerine for AI Systems" page (Aug 2026) lists FHSAs among its investment solutions and educational topics. However, no Tangerine FHSA product or account page was found (`/personal/invest/fhsa` returned 404), the Invest page lists only TFSA, RSP, RIF and non-registered accounts, and the GIC page lists no FHSA GIC. A third-party review in search results said Tangerine does not offer an FHSA. That source was **not** used as a fact. Sunny says it can't confirm and points to Tangerine.
-2. **Contact hours conflict.** The Contact Us page lists mortgage and investment-fund lines as weekdays 8 a.m.–8 p.m. ET; the AI-information page says 8 a.m.–4 p.m. ET. Sunny avoids stating hours and points to the Contact Us page.
-3. **The 2024 Tangerine article is partly outdated.** Its down-payment thresholds predate the current FCAC rules ($1.5M threshold). Current rules are taken from FCAC.
-4. **CDIC coverage of specific Tangerine products** is not stated on the Tangerine pages reviewed. Sunny uses CDIC's general rules (deposits and GICs eligible; mutual funds not) and is told not to claim coverage for a specific Tangerine product. In live testing before this rule was added, the model once did; review AI wording on this topic.
-5. Tangerine does not describe pre-approval on its mortgage page.
-
-## Deliberately omitted
-
-Promotional and current interest rates; TFSA/FHSA contribution limits and the HBP withdrawal limit (Sunny says "up to certain limits" and points to the CRA); detailed eligibility tests; emergency-fund sizing.
+1. **FHSA at Tangerine:** unconfirmed. It’s listed on the AI-information page, but no product page was found and the Invest/GIC pages don’t list one.
+2. **Investment funds:** minimum investment amounts and total MER figures aren’t on the reviewed page. Sunny states the listed management and administration fees, plus “other fund expenses”.
+3. **Advisor service:** fees, minimums and eligibility aren’t stated. Individual advisor names on the page were deliberately not recorded.
+4. **CDIC coverage of specific Tangerine products** isn’t stated on Tangerine pages. Sunny gives CDIC’s general rules only.
+5. **Contact hours** conflict between two Tangerine pages, so Sunny avoids stating hours.
+6. **Promotions:** the RSP and TFSA pages show promotional rates and bonuses. These were deliberately not recorded.
+7. **Debt vs investing:** Sunny uses only the FCAC’s general statement; there’s no Tangerine-specific guidance.
 
 ## Copy needing client review
 
-- All knowledge entries and the scripted answers in `src/data/education.ts`. Entries marked `draft: true` (start, timeline, emergency, options) include team-written framing beyond the sources.
-- Sunny's system instructions (`server/prompt.ts`), especially the advice boundary and the Tangerine-availability rule.
-- Live Gemini replies can add general detail not in the knowledge base (seen in testing: TFSA contribution-room timing, "values can go up and down" phrasing). The prompt discourages this, but a content owner should review sample transcripts.
-- Calculation assumptions and the handoff wording.
+- Insight-card and nudge wording (`src/components/Dashboard.tsx`, `src/domain/signal.ts` `explainSignal`), and the check-in wording (`src/conversation/script.ts`).
+- Scripted answers marked `draft: true` (only `why_asking`), and all answer framing in `education.ts`.
+- Sunny’s system instructions (`server/prompt.ts`): advice boundary, “not yet assigned” language, and the availability rules.
+- Live Gemini replies can paraphrase beyond the entries. A content owner should review sample transcripts.

@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CustomerProfile } from '../data/customers';
 import type { ChatRequest, ChatResponse } from '../shared/api';
 import { AiRequestError, buildChatRequest, requestChat } from './aiClient';
-import { createInitialState, reduce } from './engine';
+import { reduce } from './engine';
 import type { SunnyProvider } from './provider';
 import type { ConversationState, CustomerTurn, EngineMode, SunnyEvent } from './types';
 
@@ -21,8 +20,8 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  *  - AI mode: customer text goes to the local API; the response's effects are applied by the reducer.
  * UI-only events apply instantly. Resets cancel any reply still in flight.
  */
-export function useSunny(provider: SunnyProvider, profile: CustomerProfile, chat: ChatFn = requestChat) {
-  const [state, setState] = useState<ConversationState>(() => createInitialState(profile));
+export function useSunny(provider: SunnyProvider, init: () => ConversationState, chat: ChatFn = requestChat) {
+  const [state, setState] = useState<ConversationState>(init);
   const [pendingSay, setPendingSay] = useState<string | null>(null);
   const [orb, setOrb] = useState<OrbMode>('idle');
   const [busyFlag, setBusyFlag] = useState(false);
@@ -56,7 +55,7 @@ export function useSunny(provider: SunnyProvider, profile: CustomerProfile, chat
   /** Apply an event immediately (navigation, edits, resets, mode). */
   const dispatch = useCallback(
     (event: SunnyEvent) => {
-      const isReset = event.type === 'loadProfile' || event.type === 'confirmRestart' || event.type === 'setMode';
+      const isReset = event.type === 'loadPreset' || event.type === 'confirmRestart' || event.type === 'setMode' || event.type === 'simulateLaterVisit';
       if (busy.current && !isReset) return;
       if (isReset) {
         epoch.current += 1;
@@ -106,9 +105,12 @@ export function useSunny(provider: SunnyProvider, profile: CustomerProfile, chat
       const s = stateRef.current;
       if (s.mode === 'ai') {
         if (turn.event.type === 'customerMessage') return sendAiText(turn.event.text);
-        if (turn.event.type === 'snapshotDecision') {
-          commit(reduce(s, { event: turn.event }));
-          return sendAiText(turn.say ?? (turn.event.allow ? 'Yes, you can use my account snapshot.' : 'Not now.'));
+        if (turn.event.type === 'permission') {
+          // The permission choice is local. If the model asked for it, let the model continue afterwards.
+          const askedByModel = s.permissionPending;
+          commit(reduce(s, turn));
+          if (askedByModel) await callAi();
+          return;
         }
       }
       setBusy(true);
@@ -124,7 +126,7 @@ export function useSunny(provider: SunnyProvider, profile: CustomerProfile, chat
         finish(started);
       }
     },
-    [provider, commit, finish, sendAiText],
+    [provider, commit, finish, sendAiText, callAi],
   );
 
   const sendText = useCallback(

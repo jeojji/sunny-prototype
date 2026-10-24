@@ -2,7 +2,20 @@
  * One customer turn: retrieve knowledge, call the model with validated tools,
  * then validate the structured reply. Provider-agnostic via ModelClient.
  */
-import { LIMITS, type AiErrorCode, type ChatRequest, type ChatResponse } from '../src/shared/api.ts';
+import {
+  GOALS,
+  HORIZONS,
+  LIMITS,
+  NEXT_STEPS,
+  PURPOSES,
+  type AccountContext,
+  type AiErrorCode,
+  type AllocationDTO,
+  type ChatRequest,
+  type ChatResponse,
+  type ConversationContext,
+} from '../src/shared/api.ts';
+import { OFFERINGS, validateOfferingIds } from '../src/shared/offerings.ts';
 import { findAmounts } from '../src/lib/parse.ts';
 import { KNOWLEDGE, retrieve, validateSourceIds } from '../src/shared/knowledge.ts';
 import { SYSTEM_INSTRUCTIONS, turnContext } from './prompt.ts';
@@ -70,12 +83,13 @@ export const REPLY_SCHEMA = {
   required: ['reply', 'source_ids', 'suggestions'],
 };
 
+const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+const oneOf = <T extends string>(v: unknown, allowed: readonly T[]): T | null => (typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : null);
+
 /** Validate and trim an incoming request body. Throws AiError('bad_request'). */
 export function sanitizeRequest(body: unknown): ChatRequest {
   const b = body as Partial<ChatRequest> | null;
-  if (!b || typeof b !== 'object' || !Array.isArray(b.messages) || !b.facts) {
-    throw new AiError('bad_request', 'Malformed request.');
-  }
+  if (!b || typeof b !== 'object' || !Array.isArray(b.messages)) throw new AiError('bad_request', 'Malformed request.');
   const messages = b.messages
     .filter((m) => m && (m.role === 'customer' || m.role === 'sunny') && typeof m.text === 'string' && m.text.trim())
     .slice(-LIMITS.maxMessages)
@@ -86,32 +100,47 @@ export function sanitizeRequest(body: unknown): ChatRequest {
   if (lastRaw.length > LIMITS.maxCustomerChars) {
     throw new AiError('bad_request', `Messages are limited to ${LIMITS.maxCustomerChars} characters.`);
   }
-  const permission = b.snapshotPermission === 'granted' || b.snapshotPermission === 'declined' ? b.snapshotPermission : 'not_asked';
-  const s = b.snapshot;
-  const snapshot =
-    permission === 'granted' && s && typeof s === 'object'
+  const permission = b.permission === 'granted' || b.permission === 'declined' ? b.permission : 'not_asked';
+  const a = b.account;
+  const account: AccountContext | null =
+    permission === 'granted' && a && typeof a === 'object'
       ? {
-          chequingBalance: Number(s.chequingBalance) || 0,
-          savingsBalance: Number(s.savingsBalance) || 0,
-          monthlyIncome: Number(s.monthlyIncome) || 0,
-          monthlyExpenses: Number(s.monthlyExpenses) || 0,
-          otherSavingsCommitments: Number(s.otherSavingsCommitments) || 0,
+          chequingBalance: num(a.chequingBalance) ?? 0,
+          savingsBalance: num(a.savingsBalance) ?? 0,
+          monthlyIncome: num(a.monthlyIncome) ?? 0,
+          monthlyExpenses: num(a.monthlyExpenses) ?? 0,
+          signal:
+            a.signal && typeof a.signal === 'object'
+              ? {
+                  rule: 'elevated_chequing_balance',
+                  shown: a.signal.shown === true,
+                  observationDays: num(a.signal.observationDays) ?? 0,
+                  threshold: num(a.signal.threshold) ?? 0,
+                  minBalance: num(a.signal.minBalance),
+                  maxBalance: num(a.signal.maxBalance),
+                }
+              : null,
         }
       : null;
-  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
-  const f = b.facts;
+  const c = (b.context ?? {}) as Partial<ConversationContext>;
+  const allocations: AllocationDTO[] = (Array.isArray(c.allocations) ? c.allocations : [])
+    .map((x) => ({ account: oneOf(x?.account, ['chequing', 'savings'] as const), purpose: oneOf(x?.purpose, PURPOSES), amount: num(x?.amount) }))
+    .filter((x): x is AllocationDTO => x.account !== null && x.purpose !== null && x.amount !== null && x.amount >= 0)
+    .slice(0, 10);
+  const goalType = oneOf(c.goal?.type, GOALS);
   return {
     firstName: String(b.firstName ?? 'there').slice(0, 40),
     messages,
-    snapshotPermission: permission,
-    snapshot,
-    facts: {
-      target: num(f.target),
-      homeSavings: num(f.homeSavings),
-      reservedSeparately: num(f.reservedSeparately),
-      monthly: num(f.monthly),
-      timelineMonths: num(f.timelineMonths),
-      homeSavingsHeldElsewhere: f.homeSavingsHeldElsewhere === true,
+    permission,
+    account,
+    context: {
+      origin: oneOf(c.origin, ['nudge', 'self', 'checkin'] as const),
+      allocations,
+      goal: goalType ? { type: goalType, detail: typeof c.goal?.detail === 'string' ? c.goal.detail.slice(0, 200) : null } : null,
+      horizon: oneOf(c.horizon, HORIZONS),
+      nextStep: oneOf(c.nextStep, NEXT_STEPS),
+      offeringsViewed: validateOfferingIds(c.offeringsViewed),
+      previousNextStep: oneOf(c.previousNextStep, NEXT_STEPS),
     },
   };
 }
@@ -202,7 +231,7 @@ export async function runChatTurn(
   const entries = retrieve(retrievalQuery(req), 7);
   const ctx: ToolContext = {
     req,
-    facts: { ...req.facts },
+    context: { ...req.context, allocations: [...req.context.allocations] },
     latestCustomer: req.messages.at(-1)!.text,
     effects: [],
   };
@@ -214,9 +243,10 @@ export async function runChatTurn(
     numbersIn(
       context,
       ...KNOWLEDGE.map((e) => e.content),
-      JSON.stringify(req.facts),
-      JSON.stringify(ctx.facts),
-      JSON.stringify(req.snapshot ?? {}),
+      ...OFFERINGS.map((o) => JSON.stringify(o)),
+      JSON.stringify(req.context),
+      JSON.stringify(ctx.context),
+      JSON.stringify(req.account ?? {}),
       ...req.messages.map((m) => m.text),
       ...rounds.flatMap((r) => r.results.map((x) => x.output)),
     );
@@ -247,7 +277,7 @@ export async function runChatTurn(
           draft: parsed.reply,
           note:
             `[App check] Your draft states dollar figures that no tool or stated fact produced (${bad.map((n) => `$${n.toLocaleString('en-CA')}`).join(', ')}). ` +
-            'Never do arithmetic yourself. Write a complete, helpful replacement reply (do not apologise or mention this check): record facts the customer stated with propose_fact_update and use calculate_scenario for any totals, or explain what is still needed.',
+            'Never do arithmetic yourself. Write a complete, helpful replacement reply (do not apologise or mention this check): record what the customer stated with the record_* tools and use calculate_scenario for any totals, or explain what is still needed.',
         };
         continue;
       }

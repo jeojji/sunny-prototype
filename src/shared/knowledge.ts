@@ -8,6 +8,8 @@
  */
 
 export const REVIEW_DATE = '2026-10-21';
+/** Wealth-use-case sources added and checked on this date. */
+export const REVIEW_DATE_WEALTH = '2026-10-24';
 
 export interface KnowledgeEntry {
   id: string;
@@ -203,6 +205,63 @@ export const KNOWLEDGE: KnowledgeEntry[] = [
     keywords: ['gic', 'guaranteed investment certificate', 'term', 'term deposit'],
   },
 
+  {
+    id: 'fcac-goals',
+    topic: 'Saving vs investing, time horizon and risk',
+    content:
+      'The FCAC explains that saving and investing can both help reach goals. It describes short-term goals as 2 years or less and long-term goals as 6 years or more, and notes that many investments offer the potential for a higher return but involve some risk, which may be more acceptable for longer-term goals because there is more time to recover from losses. Risk tolerance depends on your emotional willingness to accept risk and your financial ability to absorb loss. One risk is that investments may not keep up with inflation. The FCAC also notes you’re generally better off paying down debt first, because debt interest is usually more than you can earn by investing.',
+    publisher: FCAC,
+    pageTitle: 'Setting savings and investment goals',
+    url: 'https://www.canada.ca/en/financial-consumer-agency/services/savings-investments/savings-investment-goals.html',
+    reviewed: REVIEW_DATE_WEALTH,
+    kind: 'general',
+    conditions: ['General guidance, not a recommendation for an individual.'],
+    openQuestions: [],
+    keywords: ['saving', 'investing', 'risk', 'return', 'time horizon', 'horizon', 'next year', 'long term', 'short term', 'lose money', 'debt', 'inflation', 'risk tolerance', 'build wealth'],
+  },
+  {
+    id: 'fcac-investing-basics',
+    topic: 'Before investing: factors and costs',
+    content:
+      'The FCAC suggests considering your financial situation, goals, investment time horizon and risk tolerance before investing. It explains that investment costs can come from buying, selling and managing an investment, and that costs reduce your return.',
+    publisher: FCAC,
+    pageTitle: 'Basics of investing',
+    url: 'https://www.canada.ca/en/financial-consumer-agency/services/savings-investments/investing-basics.html',
+    reviewed: REVIEW_DATE_WEALTH,
+    kind: 'general',
+    conditions: [],
+    openQuestions: [],
+    keywords: ['fees', 'costs', 'before investing', 'how investing works', 'factors', 'not ready', 'decide'],
+  },
+  {
+    id: 'fcac-gic-rights',
+    topic: 'GICs: rights and early cash-out',
+    content:
+      'The FCAC explains that with a GIC or term deposit you get back the amount you invest at the end of the term. Before you buy, institutions must tell you whether you can cash it in before the end date and how that affects interest, and whether CDIC insures the product.',
+    publisher: FCAC,
+    pageTitle: 'Guaranteed investment certificates and term deposits: know your rights',
+    url: 'https://www.canada.ca/en/financial-consumer-agency/services/rights-responsibilities/rights-investing/rights-guaranteed-investment-certificates.html',
+    reviewed: REVIEW_DATE_WEALTH,
+    kind: 'general',
+    conditions: [],
+    openQuestions: [],
+    keywords: ['gic', 'term', 'cash in', 'early', 'principal', 'need the money', 'next year'],
+  },
+  {
+    id: 'gov-rrsp',
+    topic: 'What an RRSP is',
+    content:
+      'An RRSP is a registered retirement savings plan you set up. Contributions can reduce your taxable income, income earned in the plan is usually exempt from tax while it stays in the plan, and withdrawals are generally taxable when received.',
+    publisher: CRA,
+    pageTitle: 'Registered Retirement Savings Plan (RRSP)',
+    url: 'https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/rrsps-related-plans/registered-retirement-savings-plan-rrsp.html',
+    reviewed: REVIEW_DATE_WEALTH,
+    kind: 'general',
+    conditions: ['Contribution limits and rules apply.'],
+    openQuestions: ['The page does not list what investments an RRSP can hold.'],
+    keywords: ['rrsp', 'rsp', 'retirement', 'tax deductible', 'difference', 'tfsa vs rrsp'],
+  },
+
   // -------------------------------------------------------------- Tangerine
   {
     id: 'tng-savings-account',
@@ -262,17 +321,91 @@ export const KNOWLEDGE: KnowledgeEntry[] = [
   },
   {
     id: 'tng-investment-funds',
-    topic: 'Tangerine investment funds',
+    topic: 'Tangerine Investment Funds (portfolios)',
     content:
-      'Tangerine offers managed, diversified investment portfolios (mutual funds), including Core, Global ETF and Socially Responsible Global portfolios. Tangerine states that mutual funds are not guaranteed and their values change frequently, and that diversification does not guarantee a profit or eliminate the risk of loss. Fund costs include management fees and other expenses.',
+      'Tangerine offers mutual-fund portfolios: Core Portfolios, Global ETF Portfolios (a mutual fund holding a selection of ETFs), Socially Responsible Global Portfolios, and a Money Market Fund described as a stable short-term option. The portfolios hold stocks, bonds or cash equivalents in different mixes. Tangerine states annual management fees of 0.80% (Core), 0.50% (Global ETF) and 0.55% (Socially Responsible), plus a fixed administration fee of 0.15% of each portfolio’s value and other fund expenses. They can be held in a TFSA, RSP, RIF or non-registered account.',
     publisher: T,
-    pageTitle: 'Investing: Investment Accounts & Products',
-    url: 'https://www.tangerine.ca/en/personal/invest',
-    reviewed: REVIEW_DATE,
+    pageTitle: 'Mutual Fund Investments in Canada',
+    url: 'https://www.tangerine.ca/en/personal/invest/mutual-funds',
+    reviewed: REVIEW_DATE_WEALTH,
     kind: 'tangerine',
-    conditions: ['Values can go down as well as up; mutual funds are not CDIC-insured (per CDIC).'],
-    openQuestions: ['Whether any portfolio suits a particular customer (Sunny cannot determine suitability).'],
-    keywords: ['tangerine', 'invest', 'investment', 'mutual fund', 'portfolio', 'etf', 'lose money', 'risk'],
+    conditions: [
+      'Mutual funds are not guaranteed or insured by CDIC, and their values change frequently.',
+      'All securities, including mutual funds, carry a risk of loss of capital; diversification does not eliminate it.',
+      'Read the prospectus before investing. Tangerine Investment Funds Limited is the principal distributor.',
+    ],
+    openQuestions: ['Minimum investment amounts and total MER figures are not stated on this page.', 'Whether any portfolio suits a particular customer (Sunny cannot determine suitability).'],
+    keywords: ['tangerine', 'invest', 'investment', 'investing', 'mutual fund', 'fund', 'portfolio', 'etf', 'lose money', 'risk', 'fees', 'management fee', 'build wealth', 'grow'],
+  },
+  {
+    id: 'tng-rsp-options',
+    topic: 'RSP options at Tangerine',
+    content:
+      'Tangerine offers an RSP Savings Account, an RSP Guaranteed Investment (GIC) and an RSP Investment Fund Account. Tangerine states that RSP contributions are tax deductible, and that withdrawals are taxable income with tax withheld. Registered accounts have no fees while funds stay with Tangerine.',
+    publisher: T,
+    pageTitle: 'RSPs',
+    url: 'https://www.tangerine.ca/en/personal/invest/rsp',
+    reviewed: REVIEW_DATE_WEALTH,
+    kind: 'tangerine',
+    conditions: ['Transferring an RSP to another institution has a $50 fee.', 'Contribution limits apply; customers confirm their own room with the CRA.'],
+    openQuestions: ['Minimum contributions are not stated on the page.'],
+    keywords: ['rsp', 'rrsp', 'retirement', 'tax deductible', 'tangerine', 'options', 'registered'],
+  },
+  {
+    id: 'tng-advisors',
+    topic: 'Tangerine Advisors',
+    content:
+      'Tangerine describes advisors who offer phone or video consultations, including a no-obligation investment consultation and financial-planning conversations, which can be booked online. Tangerine states its advisors don’t receive commissions based on the portfolio a client chooses or how much they invest.',
+    publisher: T,
+    pageTitle: 'Tangerine Advisors | Personalized Investment Advice & Guidance',
+    url: 'https://www.tangerine.ca/en/personal/invest/advisors',
+    reviewed: REVIEW_DATE_WEALTH,
+    kind: 'tangerine',
+    conditions: ['Booking in this prototype is not real; nothing is scheduled or sent.'],
+    openQuestions: ['Advice fees, minimums or eligibility for the advisory service are not stated on the page.'],
+    keywords: ['advisor', 'adviser', 'advice', 'person', 'human', 'talk to', 'consultation', 'book', 'planning', 'help me decide'],
+  },
+  {
+    id: 'tng-saving-vs-investing',
+    topic: 'Saving vs investing (Tangerine article)',
+    content:
+      'Tangerine’s article “What’s the difference between saving and investing?” (Nov 22, 2023) explains that savings accounts aim to pay interest with little to no risk of losing money and keep funds easy to access, while investments carry varying levels of risk in pursuit of higher potential returns and suit longer timeframes. It notes savings interest may not keep up with rising costs, investing fees are generally higher and returns aren’t guaranteed, and that the two can work together.',
+    publisher: T,
+    pageTitle: 'What’s the difference between saving and investing?',
+    url: 'https://www.tangerine.ca/en/thejuice/invest/whats-the-difference-between-saving-and-investing',
+    reviewed: REVIEW_DATE_WEALTH,
+    kind: 'tangerine',
+    conditions: ['Educational article, not advice; published in 2023.'],
+    openQuestions: [],
+    keywords: ['saving', 'investing', 'difference', 'build wealth', 'grow', 'risk', 'return', 'how investing works', 'start'],
+  },
+  {
+    id: 'tng-beginners-guide',
+    topic: 'Accounts vs. investment products (Tangerine article)',
+    content:
+      'Tangerine’s “A beginner’s guide to investing” (Jan 10, 2024) describes accounts such as a TFSA or RRSP as the container, and GICs, bonds, stocks, mutual funds and ETFs as the products that go inside. It notes GICs are a low-risk tool, mutual funds and ETFs carry a risk of loss, and fund fees vary.',
+    publisher: T,
+    pageTitle: 'A beginner’s guide to investing',
+    url: 'https://www.tangerine.ca/en/thejuice/invest/a-beginners-guide-to-investing',
+    reviewed: REVIEW_DATE_WEALTH,
+    kind: 'tangerine',
+    conditions: ['Educational article, not advice.'],
+    openQuestions: [],
+    keywords: ['container', 'account', 'is a tfsa an investment', 'inside', 'holdings', 'products', 'beginner', 'how investing works'],
+  },
+  {
+    id: 'tng-chequing-vs-savings',
+    topic: 'Chequing vs savings (Tangerine article)',
+    content:
+      'Tangerine’s article “Chequing vs. savings accounts” (June 20, 2024) describes chequing accounts as typically used for day-to-day banking, with low or no interest, and savings accounts as a place to set money aside for emergencies or a future purpose, generally with higher interest than chequing.',
+    publisher: T,
+    pageTitle: 'Chequing vs. savings accounts: your questions answered',
+    url: 'https://www.tangerine.ca/en/thejuice/save/chequing-vs-savings-accounts-your-questions-answered',
+    reviewed: REVIEW_DATE_WEALTH,
+    kind: 'tangerine',
+    conditions: ['Educational article; current account rates were deliberately not recorded.'],
+    openQuestions: [],
+    keywords: ['chequing', 'leave it in chequing', 'why not leave', 'savings account', 'interest', 'everyday'],
   },
   {
     id: 'tng-fhsa-status',

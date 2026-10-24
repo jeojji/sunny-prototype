@@ -1,72 +1,110 @@
-import type { CustomerProfile } from '../data/customers';
+import type { Relationship } from '../data/customers';
 import type { TopicId } from '../data/education';
-import type { TimelineBand } from '../lib/calc';
+import type { Allocation } from '../domain/allocations';
+import type { SignalConfig } from '../domain/signal';
 import type { AiErrorCode, ChatResponse } from '../shared/api';
+import type { GoalType } from '../shared/offerings';
 
 export type View = 'dashboard' | 'chat' | 'handoff' | 'summary';
 
 /** 'ai' = live model via the local API; 'scripted' = deterministic demo responses. */
 export type EngineMode = 'ai' | 'scripted';
 
-/** Where the scripted conversation is waiting. AI mode stays at 'intro'/'explore'. */
-export type Step =
-  | 'intro'
+/** What started a conversation. */
+export type Origin = 'nudge' | 'self' | 'checkin';
+
+export type Horizon = 'under_1_year' | '1_to_5_years' | 'over_5_years' | 'not_sure';
+
+export type NextStepId =
+  | 'learn_risk'
+  | 'compare_options'
+  | 'explore_scenario'
+  | 'read_product_page'
+  | 'prepare_questions'
+  | 'save_for_later'
+  | 'not_proceeding';
+
+/** Permission to use account details (balances, activity, signal evidence) in the conversation. */
+export type Permission = 'not_asked' | 'granted' | 'declined';
+
+/** Where the scripted conversation is waiting. AI mode mostly stays at 'start'/'explore'. */
+export type Stage =
+  | 'start'
   | 'permission'
-  | 'timeline'
-  | 'timelineMonths'
-  | 'target'
-  | 'homeSavings'
-  | 'homeSavingsAmount'
-  | 'confirmElsewhere'
-  | 'reserveAmount'
-  | 'monthly'
+  | 'purpose'
+  | 'purposeAmounts'
+  | 'confirmAllocations'
+  | 'clarifyOver'
+  | 'goal'
+  | 'horizon'
   | 'explore'
-  | 'nextSteps'
-  | 'editPicker'
-  | 'editTimeline'
-  | 'editTarget'
-  | 'editHomeSavings'
-  | 'editMonthly'
+  | 'scenario'
+  | 'earmarked'
   | 'confirmRestart';
 
-export type EditableField = 'timelineMonths' | 'target' | 'homeSavings' | 'monthly';
-
-/**
- * Facts the customer has stated/confirmed. `null` = unknown.
- * Derived numbers (gap, totals) are never stored; they are computed from these.
- * Account balances live in the profile snapshot, not here.
- */
-export interface ConfirmedFacts {
-  /** Customer chose to explore a savings goal (scripted flow). */
-  goalConfirmed: boolean;
-  /** 'snapshot' = permission granted; 'manual' = declined; null = not asked. */
-  dataSource: 'snapshot' | 'manual' | null;
-  timelineBand: TimelineBand | null;
-  timelineMonths: number | null;
-  target: number | null;
-  homeSavings: number | null;
-  /** Money the customer said to keep separate (e.g. for emergencies). */
-  reservedSeparately: number | null;
-  /** Customer confirmed some home savings are held outside the snapshot accounts. */
-  homeSavingsHeldElsewhere: boolean;
-  monthly: number | null;
+export interface Goal {
+  type: GoalType;
+  /** The customer's own words, when given. */
+  detail: string | null;
 }
 
-export type Offer = 'investment' | 'menu' | 'detour';
+export interface Prefs {
+  /** Customer said the elevated balance is already set aside: never show that opportunity nudge again. */
+  earmarked: boolean;
+  earmarkNote: string | null;
+  /** "Not now": nudge hidden until this simulated day index. */
+  dismissedUntil: number | null;
+  /** "Stop these check-ins". */
+  checkinsStopped: boolean;
+  /** "Remind me later": check-in hidden until this simulated day index. */
+  remindAfter: number | null;
+}
 
-export type NextStepId = 'learnFhsa' | 'reviewBudget' | 'gatherInfo' | 'revisit' | 'talkToPerson';
-
-export interface ScenarioSnapshot {
-  startingSavings: number;
-  target: number;
+export interface ScenarioFacts {
+  start: number;
   monthly: number;
   months: number;
+  /** Optional self-selected target. */
+  target: number | null;
+}
+
+/**
+ * What Sunny remembers about the customer between visits (synthetic demo
+ * state; may be saved in the browser). Only customer-confirmed information.
+ */
+export interface Memory {
+  permission: Permission;
+  allocations: Allocation[];
+  goal: Goal | null;
+  horizon: Horizon | null;
+  nextStep: NextStepId | null;
+  /** What prompted the first conversation. */
+  prompt: Origin | null;
+  topicsExplored: TopicId[];
+  offeringsViewed: string[];
+  sourcesCited: string[];
+  supportQuestions: string[];
+  scenario: ScenarioFacts | null;
+  prefs: Prefs;
+  /** Simulated day of the most recent conversation. */
+  lastConversationDay: number | null;
+  /** Number of simulated visits (1 = first visit). */
+  visit: number;
+}
+
+export interface AllocationSnapshot {
+  balance: number;
+  items: Allocation[];
+  unassigned: number;
+  savingsBalance: number;
 }
 
 export type MessageCard =
-  | { kind: 'education'; topic: TopicId; simple?: boolean }
-  | { kind: 'scenario'; snapshot: ScenarioSnapshot; hypothetical?: boolean }
-  | { kind: 'snapshot' }
+  | { kind: 'education'; topic: TopicId }
+  | { kind: 'signal' }
+  | { kind: 'allocations'; snapshot: AllocationSnapshot }
+  | { kind: 'offerings'; ids: string[]; reason: string }
+  | { kind: 'scenario'; input: ScenarioFacts; hypothetical?: boolean }
   | { kind: 'factsUpdated'; changes: string[] }
   | { kind: 'action'; action: 'summary' | 'handoff' }
   | { kind: 'error'; code: AiErrorCode; message: string };
@@ -80,72 +118,64 @@ export interface Message {
   sources?: string[];
   /** AI-generated text (rendered with light formatting). */
   ai?: boolean;
-  /** Excluded from the history sent to the model (errors, system notes). */
+  /** Excluded from the history sent to the model (errors, cards, notes). */
   local?: boolean;
 }
 
-/** A customer-stated amount that needs clarification before it is applied (scripted mode). */
-export interface PendingFact {
-  field: 'homeSavings';
-  amount: number;
-}
-
 export interface ConversationState {
-  profile: CustomerProfile;
+  profile: Relationship;
+  signalConfig: SignalConfig;
+  /** Simulated "today" (day index into the synthetic history). */
+  todayIndex: number;
   mode: EngineMode;
   view: View;
-  step: Step;
-  /** Step to return to after an edit, clarification or cancelled restart. */
-  resumeStep: Step | null;
-  facts: ConfirmedFacts;
-  /** Contextual quick replies offered alongside the current step until the next event (scripted). */
-  offer: Offer | null;
-  /** AI asked for snapshot permission and is waiting for Allow / Not now. */
+  stage: Stage;
+  resumeStage: Stage | null;
+  origin: Origin | null;
+  memory: Memory;
+  offer: 'investment' | 'menu' | 'detour' | 'nextSteps' | null;
+  /** AI asked for account permission and is waiting for Allow / Not now. */
   permissionPending: boolean;
-  /** Follow-up suggestions from the latest AI reply. */
   suggestions: string[];
-  pending: PendingFact | null;
+  /** Allocations awaiting clarification because they exceed the balance. */
+  pendingAllocations: Allocation[] | null;
   activeTopic: TopicId | null;
-  topicsExplored: TopicId[];
-  /** Knowledge-base ids cited during the conversation. */
-  sourcesCited: string[];
-  supportQuestions: string[];
+  /** Short dashboard acknowledgement after a customer choice (e.g. "Not now"). */
+  notice: { text: string; undo?: 'earmark' } | null;
   handoffNote: string;
   handoffNoteEdited: boolean;
-  nextSteps: NextStepId[];
   messages: Message[];
-  /** Monotonic counter for message ids (keeps the reducer pure). */
   seq: number;
 }
 
-/** Everything that can happen in a conversation. */
+export type PurposeKind = 'allocations' | 'earmarked' | 'no_plan' | 'debt' | 'other';
+
+export type CheckinAction = 'continue' | 'change_goal' | 'remind_later' | 'stop';
+
+/** Everything that can happen. Free text is mapped to these by an interpreter (scripted) or the model's tools (AI). */
 export type SunnyEvent =
-  | { type: 'open' }
-  | { type: 'confirmGoal' }
-  | { type: 'chooseDataSource'; source: 'snapshot' | 'manual' }
-  | { type: 'setTimelineBand'; band: TimelineBand }
-  | { type: 'setTimelineMonths'; months: number }
-  | { type: 'setTarget'; amount: number }
-  | { type: 'setHomeSavings'; amount: number }
-  | { type: 'askHomeSavingsAmount' }
-  | { type: 'confirmHeldElsewhere'; yes: boolean }
-  | { type: 'setEmergencyReserve'; amount: number | null }
-  | { type: 'setMonthly'; amount: number }
-  | { type: 'invalidAmount'; reason: 'negative' | 'unclear' }
+  | { type: 'open'; origin: Origin }
+  | { type: 'permission'; allow: boolean }
+  | { type: 'statePurpose'; kind: PurposeKind; allocations?: Allocation[]; note?: string }
+  | { type: 'askAllocationAmounts' }
+  | { type: 'setAllocations'; allocations: Allocation[] }
+  | { type: 'confirmAllocations' }
+  | { type: 'clarifyOver'; heldElsewhere: boolean }
+  | { type: 'setGoal'; goal: Goal }
+  | { type: 'setHorizon'; horizon: Horizon }
+  | { type: 'showOfferings' }
+  | { type: 'chooseNextStep'; step: NextStepId }
+  | { type: 'pickNextStep' }
   | { type: 'openTopic'; topic: TopicId }
   | { type: 'simpler' }
   | { type: 'askInvestment' }
+  | { type: 'startScenario' }
+  | { type: 'runScenario'; input: ScenarioFacts }
+  | { type: 'invalidAmount'; reason: 'negative' | 'unclear' }
   | { type: 'prepareSupport' }
-  | { type: 'continue' }
-  | { type: 'back' }
-  | { type: 'pickEdit' }
-  | { type: 'startEdit'; field: EditableField }
-  | { type: 'updateFacts'; patch: Partial<Pick<ConfirmedFacts, EditableField>>; brief?: boolean }
-  | { type: 'pickNextSteps' }
-  | { type: 'chooseNextSteps'; steps: NextStepId[] }
   | { type: 'showSummary' }
-  | { type: 'showHandoff' }
   | { type: 'setView'; view: View }
+  | { type: 'continue' }
   | { type: 'requestRestart' }
   | { type: 'confirmRestart' }
   | { type: 'cancel' }
@@ -153,15 +183,21 @@ export type SunnyEvent =
   | { type: 'help' }
   | { type: 'setHandoffNote'; text: string }
   | { type: 'setSupportQuestions'; questions: string[] }
-  | { type: 'toggleNextStep'; step: NextStepId }
-  | { type: 'loadProfile'; profile: CustomerProfile; mode?: EngineMode }
+  // Dashboard and demo controls
+  | { type: 'dismissNudge' }
+  | { type: 'earmarkFromDashboard' }
+  | { type: 'undoEarmark' }
+  | { type: 'checkin'; action: CheckinAction }
+  | { type: 'simulateLaterVisit'; days: number }
+  | { type: 'loadPreset'; profile: Relationship; memory?: Memory; todayIndex?: number; mode?: EngineMode }
+  | { type: 'setSignalConfig'; config: SignalConfig }
+  | { type: 'setProfileFlags'; reviewFlag?: boolean; historyDaysAvailable?: number | null }
   | { type: 'setMode'; mode: EngineMode; announce?: boolean }
   // AI mode
   | { type: 'customerMessage'; text: string }
   | { type: 'aiTurn'; response: ChatResponse }
   | { type: 'aiError'; code: AiErrorCode; message: string }
-  | { type: 'clearAiError' }
-  | { type: 'snapshotDecision'; allow: boolean };
+  | { type: 'clearAiError' };
 
 /** An event plus what the customer visibly said (quick-reply label or typed text). */
 export interface CustomerTurn {

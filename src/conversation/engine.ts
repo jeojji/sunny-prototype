@@ -1,206 +1,211 @@
 /**
  * Deterministic conversation engine: (state, customer turn) -> next state.
  *
- * Pure: no timers, randomness or I/O. Facts and derived numbers are owned
- * here. In AI mode the model's proposed effects arrive via 'aiTurn' and are
- * re-validated before anything changes, so the model can never alter figures.
+ * Pure: no timers, randomness or I/O. Balances come from the synthetic
+ * relationship, allocations and goals only from what the customer confirms,
+ * and every number from code. In AI mode the model's proposed effects arrive
+ * via 'aiTurn' and are re-validated here before anything changes.
  */
-import type { CustomerProfile } from '../data/customers';
-import { TOPICS, type TopicId } from '../data/education';
-import {
-  bandForMonths,
-  calculateScenario,
-  isValidAmount,
-  isValidMonths,
-  monthlyCashFlow,
-  type ScenarioInput,
-} from '../lib/calc';
-import { horizon, money } from '../lib/format';
-import { checkFactValue, type FactField } from '../shared/api';
+import { balancesOn, visibleHistory, type Relationship } from '../data/customers';
+import { TOPICS, TOPICS_FOR_GOAL, type TopicId } from '../data/education';
+import { applyAllocations, summarizeAccount, type Allocation } from '../domain/allocations';
+import { DEFAULT_SIGNAL_CONFIG, evaluateElevatedBalance, type SignalConfig, type SignalResult } from '../domain/signal';
+import { projectWithoutReturns } from '../lib/calc';
+import { GOALS, HORIZONS, NEXT_STEPS, type ChatEffect } from '../shared/api';
 import { validateSourceIds } from '../shared/knowledge';
-import { script } from './script';
+import { offeringsFor, validateOfferingIds, getOffering } from '../shared/offerings';
+import { GOAL_LABEL, HORIZON_LABEL, NEXT_STEP_LABEL, script } from './script';
 import type {
-  ConfirmedFacts,
+  AllocationSnapshot,
   ConversationState,
   CustomerTurn,
-  EditableField,
   EngineMode,
-  Message,
+  Memory,
   MessageCard,
-  Step,
+  Message,
+  NextStepId,
+  Origin,
+  Stage,
 } from './types';
 
-export const EMPTY_FACTS: ConfirmedFacts = {
-  goalConfirmed: false,
-  dataSource: null,
-  timelineBand: null,
-  timelineMonths: null,
-  target: null,
-  homeSavings: null,
-  reservedSeparately: null,
-  homeSavingsHeldElsewhere: false,
-  monthly: null,
-};
+export const NUDGE_SNOOZE_DAYS = 30;
+export const REMIND_LATER_DAYS = 14;
 
-export function createInitialState(profile: CustomerProfile, mode: EngineMode = 'scripted'): ConversationState {
+export function createMemory(): Memory {
+  return {
+    permission: 'not_asked',
+    allocations: [],
+    goal: null,
+    horizon: null,
+    nextStep: null,
+    prompt: null,
+    topicsExplored: [],
+    offeringsViewed: [],
+    sourcesCited: [],
+    supportQuestions: [],
+    scenario: null,
+    prefs: { earmarked: false, earmarkNote: null, dismissedUntil: null, checkinsStopped: false, remindAfter: null },
+    lastConversationDay: null,
+    visit: 1,
+  };
+}
+
+export function createInitialState(
+  profile: Relationship,
+  opts: { memory?: Memory; todayIndex?: number; mode?: EngineMode; signalConfig?: SignalConfig } = {},
+): ConversationState {
   return {
     profile,
-    mode,
+    signalConfig: opts.signalConfig ?? DEFAULT_SIGNAL_CONFIG,
+    todayIndex: opts.todayIndex ?? profile.spec.todayIndex,
+    mode: opts.mode ?? 'scripted',
     view: 'dashboard',
-    step: 'intro',
-    resumeStep: null,
-    facts: { ...EMPTY_FACTS },
+    stage: 'start',
+    resumeStage: null,
+    origin: null,
+    memory: opts.memory ?? createMemory(),
     offer: null,
     permissionPending: false,
     suggestions: [],
-    pending: null,
+    pendingAllocations: null,
     activeTopic: null,
-    topicsExplored: [],
-    sourcesCited: [],
-    supportQuestions: [],
+    notice: null,
     handoffNote: '',
     handoffNoteEdited: false,
-    nextSteps: [],
     messages: [],
     seq: 0,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Derived values (pure helpers shared with UI, summary and the API request)
+// Derived values (pure; used by UI, summary and the API request)
 // ---------------------------------------------------------------------------
 
-/** Scenario inputs from confirmed facts, or null if any are still unknown. */
-export function scenarioInput(facts: ConfirmedFacts): ScenarioInput | null {
-  const { homeSavings, target, monthly, timelineMonths } = facts;
-  if (homeSavings === null || target === null || monthly === null || timelineMonths === null) return null;
-  return { startingSavings: homeSavings, target, monthly, months: timelineMonths };
+export function currentBalances(state: ConversationState) {
+  return balancesOn(state.profile, state.todayIndex);
 }
 
-export function hasAnyGoalFact(facts: ConfirmedFacts): boolean {
-  return [facts.target, facts.homeSavings, facts.monthly, facts.timelineMonths, facts.reservedSeparately].some((v) => v !== null);
+export function signalFor(state: ConversationState): SignalResult {
+  return evaluateElevatedBalance({
+    history: visibleHistory(state.profile, state.todayIndex),
+    todayIndex: state.todayIndex,
+    config: state.signalConfig,
+    reviewFlag: state.profile.reviewFlag,
+    prefs: { earmarked: state.memory.prefs.earmarked, dismissedUntil: state.memory.prefs.dismissedUntil },
+  });
 }
 
-/** Monthly cash flow from the snapshot, only when the customer shared it. */
-export function sharedCashFlow(state: ConversationState): number | null {
-  if (state.facts.dataSource !== 'snapshot') return null;
-  const p = state.profile;
-  return monthlyCashFlow(p.monthlyIncome, p.monthlyExpenses, p.otherSavingsCommitments);
+export function allocationSnapshot(state: ConversationState): AllocationSnapshot {
+  const b = currentBalances(state);
+  const s = summarizeAccount('chequing', b.chequing, state.memory.allocations);
+  return { balance: b.chequing, items: s.items, unassigned: s.unassigned, savingsBalance: b.savings };
 }
 
-export const QUESTION_STEPS: Step[] = [
-  'permission',
-  'timeline',
-  'timelineMonths',
-  'target',
-  'homeSavings',
-  'homeSavingsAmount',
-  'monthly',
-];
+/** A later-visit check-in, only when it reflects a real saved next step and the customer hasn't opted out. */
+export function pendingCheckin(state: ConversationState): { text: string; step: NextStepId } | null {
+  const m = state.memory;
+  if (!m.nextStep || m.nextStep === 'not_proceeding' || m.prefs.checkinsStopped) return null;
+  if (m.lastConversationDay === null || state.todayIndex <= m.lastConversationDay) return null;
+  if (m.prefs.remindAfter !== null && state.todayIndex < m.prefs.remindAfter) return null;
+  return { text: script.checkinPrompt(m), step: m.nextStep };
+}
 
-const EDIT_STEP: Record<EditableField, Step> = {
-  timelineMonths: 'editTimeline',
-  target: 'editTarget',
-  homeSavings: 'editHomeSavings',
-  monthly: 'editMonthly',
-};
+export type DashboardCard =
+  | { kind: 'checkin'; text: string; step: NextStepId }
+  | { kind: 'nudge'; signal: SignalResult }
+  | { kind: 'notice'; text: string; undo?: 'earmark' }
+  | null;
 
-const TRANSIENT: Step[] = ['editPicker', 'editTimeline', 'editTarget', 'editHomeSavings', 'editMonthly', 'confirmRestart', 'confirmElsewhere', 'reserveAmount'];
-export const isTransientStep = (s: Step) => TRANSIENT.includes(s);
+/**
+ * The customer already engaged with the opportunity nudge (said what the money
+ * is for, set a goal or chose a next step). Repeating it would be pushy;
+ * continuity happens through check-ins instead.
+ */
+export function engagedWithNudge(state: ConversationState): boolean {
+  const m = state.memory;
+  return m.prompt === 'nudge' && (m.allocations.length > 0 || m.goal !== null || m.nextStep !== null);
+}
 
-function describeField(facts: ConfirmedFacts, field: EditableField): string {
-  const v = facts[field];
-  if (v === null) return 'not set yet';
-  return field === 'timelineMonths' ? horizon(v) : field === 'monthly' ? `${money(v)} a month` : money(v);
+export function dashboardCard(state: ConversationState): DashboardCard {
+  const checkin = pendingCheckin(state);
+  if (checkin) return { kind: 'checkin', ...checkin };
+  if (state.notice) return { kind: 'notice', ...state.notice };
+  const signal = signalFor(state);
+  if (signal.show && !engagedWithNudge(state)) return { kind: 'nudge', signal };
+  return null;
+}
+
+export function hasPlan(state: ConversationState): boolean {
+  const m = state.memory;
+  return m.allocations.length > 0 || m.goal !== null || m.nextStep !== null || m.scenario !== null;
 }
 
 // ---------------------------------------------------------------------------
 // Reducer
 // ---------------------------------------------------------------------------
 
-/** Mutable working copy used inside a single reduce call. */
 type Draft = ConversationState;
 
 function push(d: Draft, msg: Omit<Message, 'id'>) {
   d.seq += 1;
   d.messages = [...d.messages, { id: `m${d.seq}`, ...msg }];
 }
-
 function say(d: Draft, text: string, card?: MessageCard, extra?: Partial<Message>) {
   push(d, { role: 'sunny', text, ...(card ? { card } : {}), ...extra });
 }
-
 function customerSays(d: Draft, text: string) {
   push(d, { role: 'customer', text });
 }
-
+function mem(d: Draft): Memory {
+  if (d.memory === undefined) throw new Error('memory missing');
+  return d.memory;
+}
 function cite(d: Draft, ids: string[]) {
-  for (const id of ids) if (!d.sourcesCited.includes(id)) d.sourcesCited = [...d.sourcesCited, id];
+  const m = mem(d);
+  for (const id of ids) if (!m.sourcesCited.includes(id)) m.sourcesCited = [...m.sourcesCited, id];
 }
 
-/** Emit the question for a step and make it current. */
-function ask(d: Draft, step: Step) {
-  d.step = step;
-  const { profile, facts } = d;
-  switch (step) {
-    case 'intro':
-      say(d, script.whatFirst);
+const QUESTION_STAGES: Stage[] = ['permission', 'purpose', 'purposeAmounts', 'confirmAllocations', 'clarifyOver', 'goal', 'horizon', 'scenario'];
+
+/** Re-ask the question for a stage. */
+function ask(d: Draft, stage: Stage) {
+  d.stage = stage;
+  switch (stage) {
+    case 'start':
+      say(d, script.greetingSelf(d.profile.firstName));
       break;
     case 'permission':
-      say(d, script.permission);
+      say(d, script.permissionAsk);
       break;
-    case 'timeline':
-      say(d, script.timeline);
+    case 'purpose':
+      say(d, script.purposeAsk);
       break;
-    case 'timelineMonths':
-      say(d, script.timelineMonths(facts.timelineBand ?? 'oneToFive'));
+    case 'purposeAmounts':
+      say(d, script.allocationsReenter);
       break;
-    case 'target':
-      say(d, script.target);
+    case 'confirmAllocations':
+      confirmText(d);
       break;
-    case 'homeSavings':
-      if (facts.dataSource === 'snapshot') {
-        say(d, profile.savingsBalance > 0 ? script.homeSavingsSnapshot(profile.savingsBalance) : script.homeSavingsSnapshotEmpty);
-      } else {
-        say(d, script.homeSavingsManual);
-      }
+    case 'goal':
+      say(d, script.goalAsk);
       break;
-    case 'homeSavingsAmount':
-      say(d, script.homeSavingsAmount);
+    case 'horizon':
+      say(d, script.horizonAsk);
       break;
-    case 'confirmElsewhere':
-      say(d, script.exceedsSnapshot(d.pending?.amount ?? 0, profile.savingsBalance));
+    case 'explore':
+      say(d, script.nextStepAsk);
       break;
-    case 'reserveAmount':
-      say(d, script.reserveAsk);
+    case 'scenario':
+      say(d, script.scenarioIntro);
       break;
-    case 'monthly': {
-      const cf = sharedCashFlow(d);
-      if (cf === null) say(d, script.monthlyManual);
-      else if (cf <= 0) say(d, script.monthlyNoSurplus);
-      else say(d, script.monthlyWithCashFlow(cf));
+    case 'clarifyOver': {
+      const b = currentBalances(d);
+      const total = (d.pendingAllocations ?? []).reduce((s, a) => s + a.amount, 0);
+      say(d, script.allocationsOver(total, b.chequing));
       break;
     }
-    case 'explore':
-      say(d, script.explore);
-      break;
-    case 'nextSteps':
-      say(d, script.nextSteps);
-      break;
-    case 'editPicker':
-      say(d, script.editPicker);
-      break;
-    case 'editTimeline':
-      say(d, script.editField('timelineMonths', describeField(facts, 'timelineMonths')));
-      break;
-    case 'editTarget':
-      say(d, script.editField('target', describeField(facts, 'target')));
-      break;
-    case 'editHomeSavings':
-      say(d, script.editField('homeSavings', describeField(facts, 'homeSavings')));
-      break;
-    case 'editMonthly':
-      say(d, script.editField('monthly', describeField(facts, 'monthly')));
+    case 'earmarked':
+      say(d, script.earmarkedAck(mem(d).prefs.earmarkNote));
       break;
     case 'confirmRestart':
       say(d, script.confirmRestart);
@@ -208,217 +213,340 @@ function ask(d: Draft, step: Step) {
   }
 }
 
-/** Present the scenario using current facts. */
-function presentScenario(d: Draft, opts: { withBand: boolean }) {
-  const input = scenarioInput(d.facts);
-  if (!input) return;
-  const r = calculateScenario(input);
-  const card: MessageCard = { kind: 'scenario', snapshot: { ...input } };
-  // The scenario is now the subject; "explain more simply" shouldn't refer to an earlier topic.
-  d.activeTopic = null;
-  if (r.targetAlreadyReached) {
-    say(d, script.scenarioReached(input.startingSavings, input.target), card);
-  } else if (input.monthly === 0) {
-    say(d, script.scenarioZero(input.startingSavings, input.target, r.gap), card);
+function confirmText(d: Draft) {
+  const snap = allocationSnapshot(d);
+  if (mem(d).permission === 'granted' || d.mode === 'scripted') {
+    say(d, mem(d).permission === 'declined' ? script.allocationsAckGeneral(snap.items) : script.allocationsAck(snap.balance, snap.items, snap.unassigned, snap.savingsBalance), {
+      kind: 'allocations',
+      snapshot: snap,
+    });
   } else {
-    say(d, script.scenarioIntro, card);
-    say(d, script.scenarioResult(input.monthly, input.months, r, input.target));
+    say(d, script.allocationsAckGeneral(snap.items));
   }
-  if (opts.withBand && d.mode === 'scripted') {
-    if (input.monthly === 0 && !r.targetAlreadyReached) say(d, script.zeroBranch);
-    else if (d.facts.timelineBand) say(d, script.band(d.facts.timelineBand));
-  }
-}
-
-/** Scripted goal flow: ask the first unknown question, or present the scenario once complete. */
-function advance(d: Draft, opts: { withBand: boolean } = { withBand: true }) {
-  const f = d.facts;
-  if (!f.goalConfirmed) return ask(d, 'intro');
-  if (!f.dataSource) return ask(d, 'permission');
-  if (f.timelineMonths === null) return ask(d, f.timelineBand ? 'timelineMonths' : 'timeline');
-  if (f.target === null) return ask(d, 'target');
-  if (f.homeSavings === null) return ask(d, 'homeSavings');
-  if (f.monthly === null) return ask(d, 'monthly');
-  d.step = 'explore';
-  presentScenario(d, opts);
-}
-
-/**
- * After a fact changes outside the step-by-step flow: show refreshed numbers if
- * complete; continue the scripted goal flow if one is in progress; otherwise stay put.
- */
-function afterFactChange(d: Draft, opts: { withBand: boolean }) {
-  if (isTransientStep(d.step)) {
-    d.step = d.resumeStep ?? (d.facts.goalConfirmed ? 'explore' : 'intro');
-    d.resumeStep = null;
-  }
-  if (scenarioInput(d.facts)) {
-    if (d.mode === 'scripted' && d.step !== 'nextSteps' && d.step !== 'intro') d.step = 'explore';
-    presentScenario(d, opts);
-  } else if (d.mode === 'scripted' && d.facts.goalConfirmed) {
-    advance(d, opts);
-  }
-}
-
-function snapshotSavings(d: Draft): number | null {
-  return d.facts.dataSource === 'snapshot' ? d.profile.savingsBalance : null;
-}
-
-/** Reserved money on the snapshot route = savings balance − home-goal savings (never negative). */
-function reservedFor(d: Draft, home: number): number | null {
-  const savings = snapshotSavings(d);
-  return savings === null ? d.facts.reservedSeparately : Math.max(0, savings - home);
-}
-
-/**
- * Apply a home-savings amount. On the snapshot route, an amount above the
- * savings balance needs clarification (money held elsewhere?) first.
- * Returns false if clarification was requested.
- */
-function applyHomeSavings(d: Draft, amount: number): boolean {
-  const savings = snapshotSavings(d);
-  if (savings !== null && amount > savings) {
-    if (!isTransientStep(d.step)) d.resumeStep = d.step;
-    d.pending = { field: 'homeSavings', amount };
-    ask(d, 'confirmElsewhere');
-    return false;
-  }
-  d.facts.homeSavings = amount;
-  d.facts.homeSavingsHeldElsewhere = false;
-  d.facts.reservedSeparately = reservedFor(d, amount);
-  return true;
-}
-
-function previousStep(step: Step): Step | null {
-  const map: Partial<Record<Step, Step>> = {
-    permission: 'intro',
-    timeline: 'permission',
-    timelineMonths: 'timeline',
-    target: 'timelineMonths',
-    homeSavings: 'target',
-    homeSavingsAmount: 'homeSavings',
-    monthly: 'homeSavings',
-    explore: 'monthly',
-    nextSteps: 'explore',
-  };
-  return map[step] ?? null;
-}
-
-function suggestedQuestions(d: Draft, fromInvestment: boolean): string[] {
-  const f = d.facts;
-  const qs: string[] = [];
-  if (fromInvestment) qs.push('Which savings or investment options might suit my timeline and situation?');
-  if (d.topicsExplored.some((t) => t === 'fhsa' || t === 'fhsaTangerine') || f.timelineBand === 'oneToFive' || f.timelineBand === 'overFive') {
-    qs.push('Does Tangerine offer an FHSA, and how would its rules apply to me?');
-  }
-  if (f.timelineBand === 'underOne') qs.push('What should I do to get ready for a mortgage pre-approval?');
-  const input = scenarioInput(f);
-  if (input) {
-    const r = calculateScenario(input);
-    if (input.monthly === 0 && !r.targetAlreadyReached) qs.push('How could I start building savings with my current budget?');
-    else if (r.valid && r.remainingGap > 0) qs.push('What are my options if I don’t reach my target in time?');
-  }
-  if (qs.length === 0) qs.push('What information should I prepare before a mortgage conversation?');
-  return qs;
 }
 
 function openTopic(d: Draft, topic: TopicId, simple: boolean) {
   const t = TOPICS[topic];
+  const m = mem(d);
   d.activeTopic = topic;
-  if (!d.topicsExplored.includes(topic)) d.topicsExplored = [...d.topicsExplored, topic];
+  if (!m.topicsExplored.includes(topic)) m.topicsExplored = [...m.topicsExplored, topic];
   cite(d, t.sources);
-  const text = simple ? t.simple : t.body.join('\n\n');
-  say(d, text, !simple && t.points ? { kind: 'education', topic } : undefined, { sources: t.sources });
-  if (QUESTION_STEPS.includes(d.step) || isTransientStep(d.step)) {
+  say(d, simple ? t.simple : t.body.join('\n\n'), !simple && t.points ? { kind: 'education', topic } : undefined, t.sources.length ? { sources: t.sources } : {});
+  if (QUESTION_STAGES.includes(d.stage)) {
     say(d, script.resumeHint);
     d.offer = 'detour';
   }
 }
 
-/** Apply validated AI-proposed fact changes; returns human-readable change descriptions. */
-function applyAiFacts(d: Draft, patch: Partial<Record<FactField, number>>, heldElsewhere: boolean): string[] {
+function showOfferings(d: Draft) {
+  const m = mem(d);
+  const list = offeringsFor(m.goal?.type ?? null);
+  const ids = list.map((o) => o.id);
+  for (const id of ids) if (!m.offeringsViewed.includes(id)) m.offeringsViewed = [...m.offeringsViewed, id];
+  const sources = [...new Set(list.flatMap((o) => o.sources))];
+  cite(d, sources);
+  say(d, script.offeringsIntro[m.goal?.type ?? 'understand_options'], { kind: 'offerings', ids, reason: script.offeringsReason(m.goal?.type ?? null) });
+  say(d, script.nextStepAsk);
+  d.stage = 'explore';
+}
+
+function applyAllocationList(d: Draft, list: Allocation[]): 'ok' | 'over' | 'negative' {
+  const b = currentBalances(d);
+  // Replace this conversation's chequing allocations with the stated set.
+  const base = mem(d).allocations.filter((a) => !list.some((x) => x.account === a.account && x.purpose === a.purpose));
+  const r = applyAllocations(base, list, { chequing: b.chequing, savings: b.savings });
+  if (!r.ok) {
+    if (r.reason === 'exceeds_balance') return 'over';
+    return 'negative';
+  }
+  mem(d).allocations = r.list;
+  return 'ok';
+}
+
+function setAllocations(d: Draft, list: Allocation[]) {
+  const result = applyAllocationList(d, list);
+  if (result === 'negative') {
+    say(d, script.negativeAmount);
+    d.stage = 'purposeAmounts';
+    return;
+  }
+  if (result === 'over') {
+    d.pendingAllocations = list;
+    ask(d, 'clarifyOver');
+    return;
+  }
+  d.pendingAllocations = null;
+  d.stage = 'confirmAllocations';
+  confirmText(d);
+}
+
+function chooseNextStep(d: Draft, step: NextStepId) {
+  const m = mem(d);
+  m.nextStep = step;
+  switch (step) {
+    case 'learn_risk': {
+      say(d, script.nextStepAck.learn_risk);
+      openTopic(d, 'risk', false);
+      break;
+    }
+    case 'compare_options':
+      say(d, script.nextStepAck.compare_options);
+      openTopic(d, 'gic_vs_fund', false);
+      break;
+    case 'explore_scenario':
+      say(d, script.nextStepAck.explore_scenario);
+      ask(d, 'scenario');
+      return;
+    case 'read_product_page': {
+      const ids = m.offeringsViewed.length ? m.offeringsViewed : offeringsFor(m.goal?.type ?? null).map((o) => o.id);
+      say(d, script.nextStepAck.read_product_page, { kind: 'offerings', ids, reason: 'Official pages for the options you looked at.' });
+      break;
+    }
+    case 'prepare_questions':
+      say(d, script.nextStepAck.prepare_questions);
+      prepareSupport(d);
+      return;
+    case 'save_for_later':
+    case 'not_proceeding':
+      say(d, script.nextStepAck[step]);
+      break;
+  }
+  const r = script.remember(step);
+  if (r) say(d, r);
+  d.stage = 'explore';
+}
+
+function suggestedQuestions(d: Draft): string[] {
+  const m = mem(d);
+  const qs: string[] = [];
+  if (m.goal?.type === 'build_wealth') qs.push('Given my goals and timeline, how should I think about risk?');
+  if (m.offeringsViewed.includes('investment-funds')) qs.push('How do the Tangerine portfolios differ, and what are the total costs?');
+  if (m.offeringsViewed.includes('tfsa') || m.offeringsViewed.includes('rsp')) qs.push('Would a TFSA or an RSP make more sense for my situation?');
+  if (m.goal?.type === 'first_home') qs.push('Does Tangerine offer an FHSA?');
+  if (!qs.length) qs.push('What should I consider before deciding what to do with this money?');
+  return qs;
+}
+
+function prepareSupport(d: Draft) {
+  const m = mem(d);
+  const merged = [...m.supportQuestions];
+  for (const q of suggestedQuestions(d)) if (!merged.includes(q)) merged.push(q);
+  m.supportQuestions = merged;
+  say(d, script.supportPrepared);
+  d.view = 'handoff';
+}
+
+function openConversation(d: Draft, origin: Origin) {
+  const m = mem(d);
+  d.view = 'chat';
+  d.notice = null;
+  if (d.messages.length && d.origin === origin) return; // resume the same conversation
+  d.messages = [];
+  d.offer = null;
+  d.suggestions = [];
+  d.activeTopic = null;
+  d.origin = origin;
+  m.prompt ??= origin;
+  m.lastConversationDay = d.todayIndex;
+  if (origin === 'self') {
+    say(d, script.greetingSelf(d.profile.firstName));
+    say(d, script.scopeNote);
+    d.stage = 'start';
+    return;
+  }
+  if (origin === 'nudge') {
+    const signal = signalFor(d);
+    say(d, script.nudgeOpen(d.profile.firstName, signal, d.signalConfig.observationDays), m.permission === 'granted' ? { kind: 'signal' } : undefined);
+    if (m.permission === 'granted') ask(d, 'purpose');
+    else ask(d, 'permission');
+    return;
+  }
+  // Check-in: continue from the saved next step.
+  say(d, script.checkinWelcome(d.profile.firstName, m));
+  if (m.nextStep && m.nextStep !== 'not_proceeding' && m.nextStep !== 'save_for_later') chooseNextStep(d, m.nextStep);
+  else if (m.goal) showOfferings(d);
+  else ask(d, 'goal');
+}
+
+/** Apply validated AI-proposed effects. Returns customer-visible change notes. */
+function applyAiEffects(d: Draft, effects: ChatEffect[]) {
+  const m = mem(d);
   const changes: string[] = [];
-  const savings = snapshotSavings(d);
-  const order: FactField[] = ['reservedSeparately', 'homeSavings', 'target', 'monthly', 'timelineMonths'];
-  for (const field of order) {
-    const v = patch[field];
-    if (v === undefined || checkFactValue(field, v) !== null) continue;
-    if (field === 'homeSavings' && savings !== null && v > savings && !heldElsewhere) continue;
-    if (field === 'reservedSeparately' && savings !== null && v > savings) continue;
-    switch (field) {
-      case 'reservedSeparately':
-        d.facts.reservedSeparately = v;
-        changes.push(`kept separate ${money(v)}`);
-        // Same savings balance: a reserve without a matching home amount implies home = savings − reserve.
-        if (savings !== null && patch.homeSavings === undefined && !d.facts.homeSavingsHeldElsewhere &&
-          (d.facts.homeSavings === null || d.facts.homeSavings + v > savings)) {
-          d.facts.homeSavings = savings - v;
-          changes.push(`saved for this goal ${money(savings - v)}`);
+  for (const e of effects) {
+    switch (e.type) {
+      case 'allocationsUpdated': {
+        const list = (e.allocations ?? []).filter((a) => a && (a.account === 'chequing' || a.account === 'savings'));
+        const b = currentBalances(d);
+        const r = applyAllocations([], list, { chequing: b.chequing, savings: b.savings });
+        if (r.ok) {
+          m.allocations = r.list;
+          const snap = allocationSnapshot(d);
+          say(d, '', { kind: 'allocations', snapshot: snap }, { local: true });
+        } else if (r.reason === 'exceeds_balance') {
+          say(d, script.overNotSaved(b.chequing), undefined, { local: true });
         }
         break;
-      case 'homeSavings':
-        d.facts.homeSavings = v;
-        d.facts.homeSavingsHeldElsewhere = savings !== null && v > savings;
-        changes.push(`saved for this goal ${money(v)}${d.facts.homeSavingsHeldElsewhere ? ' (incl. money held elsewhere)' : ''}`);
+      }
+      case 'goalSet':
+        if (GOALS.includes(e.goal?.type)) {
+          m.goal = { type: e.goal.type, detail: e.goal.detail?.slice(0, 200) ?? null };
+          changes.push(`goal: ${GOAL_LABEL[e.goal.type].toLowerCase()}`);
+        }
         break;
-      case 'target':
-        d.facts.target = v;
-        changes.push(`target ${money(v)}`);
+      case 'horizonSet':
+        if (HORIZONS.includes(e.horizon)) {
+          m.horizon = e.horizon;
+          changes.push(`timeframe: ${HORIZON_LABEL[e.horizon].toLowerCase()}`);
+        }
         break;
-      case 'monthly':
-        d.facts.monthly = v;
-        changes.push(`monthly amount ${money(v)}`);
+      case 'offeringsShown': {
+        const ids = validateOfferingIds(e.ids);
+        if (ids.length) {
+          for (const id of ids) if (!m.offeringsViewed.includes(id)) m.offeringsViewed = [...m.offeringsViewed, id];
+          cite(d, [...new Set(ids.flatMap((id) => getOffering(id)?.sources ?? []))]);
+          say(d, '', { kind: 'offerings', ids, reason: (e.reason || script.offeringsReason(m.goal?.type ?? null)).slice(0, 200) }, { local: true });
+        }
         break;
-      case 'timelineMonths':
-        d.facts.timelineMonths = v;
-        d.facts.timelineBand = bandForMonths(v);
-        changes.push(`timeline ${horizon(v)}`);
+      }
+      case 'nextStepSet':
+        if (NEXT_STEPS.includes(e.step)) {
+          m.nextStep = e.step;
+          changes.push(`next step: ${NEXT_STEP_LABEL[e.step].toLowerCase()}`);
+        }
         break;
+      case 'scenario': {
+        const input = { start: e.input.start, monthly: e.input.monthly, months: e.input.months, target: e.input.target ?? null };
+        if (projectWithoutReturns(input).valid) {
+          m.scenario = input;
+          say(d, '', { kind: 'scenario', input }, { local: true });
+        }
+        break;
+      }
+      case 'requestPermission':
+        if (m.permission !== 'granted') d.permissionPending = true;
+        break;
+      case 'summaryReady':
+        say(d, '', { kind: 'action', action: 'summary' }, { local: true });
+        break;
+      case 'handoffReady': {
+        const merged = [...m.supportQuestions];
+        for (const q of e.questions ?? []) if (typeof q === 'string' && q.trim() && !merged.includes(q.trim())) merged.push(q.trim());
+        m.supportQuestions = merged.slice(0, 8);
+        say(d, '', { kind: 'action', action: 'handoff' }, { local: true });
+        break;
+      }
     }
   }
-  return changes;
+  if (changes.length) say(d, '', { kind: 'factsUpdated', changes }, { local: true });
 }
 
 export function reduce(state: ConversationState, turn: CustomerTurn): ConversationState {
   const { event } = turn;
 
-  // Non-conversational updates: no messages, keep the current offer.
+  // ---- Non-conversational updates
   switch (event.type) {
     case 'setHandoffNote':
       return { ...state, handoffNote: event.text, handoffNoteEdited: true };
     case 'setSupportQuestions':
-      return { ...state, supportQuestions: event.questions };
-    case 'toggleNextStep': {
-      const has = state.nextSteps.includes(event.step);
-      return { ...state, nextSteps: has ? state.nextSteps.filter((s) => s !== event.step) : [...state.nextSteps, event.step] };
-    }
+      return { ...state, memory: { ...state.memory, supportQuestions: event.questions } };
     case 'setView':
-      return { ...state, view: event.view };
-    case 'loadProfile':
-      return createInitialState(event.profile, event.mode ?? state.mode);
-    case 'confirmRestart': {
-      const fresh = createInitialState(state.profile, state.mode);
-      return reduce(fresh, { event: { type: 'open' } });
-    }
+      return { ...state, view: event.view, notice: event.view === 'dashboard' ? state.notice : null };
+    case 'loadPreset':
+      return createInitialState(event.profile, { memory: event.memory, todayIndex: event.todayIndex, mode: event.mode ?? state.mode, signalConfig: state.signalConfig });
+    case 'setSignalConfig':
+      return { ...state, signalConfig: event.config };
+    case 'setProfileFlags':
+      return {
+        ...state,
+        profile: {
+          ...state.profile,
+          ...(event.reviewFlag !== undefined ? { reviewFlag: event.reviewFlag } : {}),
+          ...(event.historyDaysAvailable !== undefined ? { historyDaysAvailable: event.historyDaysAvailable } : {}),
+        },
+      };
     case 'clearAiError': {
       const messages = [...state.messages];
       while (messages.length && messages.at(-1)!.card?.kind === 'error') messages.pop();
       return { ...state, messages };
     }
+    case 'dismissNudge':
+      return {
+        ...state,
+        memory: { ...state.memory, prefs: { ...state.memory.prefs, dismissedUntil: state.todayIndex + NUDGE_SNOOZE_DAYS } },
+        notice: { text: 'Okay. Sunny won’t bring this up for a while.' },
+      };
+    case 'earmarkFromDashboard':
+      return {
+        ...state,
+        memory: { ...state.memory, prefs: { ...state.memory.prefs, earmarked: true, earmarkNote: null } },
+        notice: { text: 'Got it. Sunny won’t suggest exploring this balance again.', undo: 'earmark' },
+      };
+    case 'undoEarmark':
+      return { ...state, memory: { ...state.memory, prefs: { ...state.memory.prefs, earmarked: false, earmarkNote: null } }, notice: null };
+    case 'simulateLaterVisit': {
+      const maxDay = state.profile.balances.length - 1;
+      return {
+        ...state,
+        todayIndex: Math.min(state.todayIndex + event.days, maxDay),
+        view: 'dashboard',
+        stage: 'start',
+        origin: null,
+        messages: [],
+        offer: null,
+        suggestions: [],
+        permissionPending: false,
+        pendingAllocations: null,
+        activeTopic: null,
+        notice: null,
+        memory: { ...state.memory, visit: state.memory.visit + 1 },
+      };
+    }
+    case 'confirmRestart': {
+      const fresh = createInitialState(state.profile, { mode: state.mode, signalConfig: state.signalConfig, todayIndex: state.profile.spec.todayIndex });
+      return { ...fresh, notice: { text: 'This demo customer has been reset.' } };
+    }
+    case 'checkin':
+      if (event.action === 'remind_later') {
+        return {
+          ...state,
+          memory: { ...state.memory, prefs: { ...state.memory.prefs, remindAfter: state.todayIndex + REMIND_LATER_DAYS } },
+          notice: { text: 'Okay. Sunny will ask again in a couple of weeks (simulated).' },
+        };
+      }
+      if (event.action === 'stop') {
+        return {
+          ...state,
+          memory: { ...state.memory, prefs: { ...state.memory.prefs, checkinsStopped: true } },
+          notice: { text: 'Check-ins are off. You can still ask Sunny anything, anytime.' },
+        };
+      }
+      break;
     default:
       break;
   }
 
-  const d: Draft = { ...state, facts: { ...state.facts }, offer: null };
+  const d: Draft = {
+    ...state,
+    memory: { ...state.memory, prefs: { ...state.memory.prefs } },
+    offer: null,
+  };
   if (turn.say) customerSays(d, turn.say);
 
   switch (event.type) {
     case 'open':
-      d.view = 'chat';
-      if (state.messages.length === 0) {
-        say(d, script.greeting(d.profile));
-        say(d, script.scopeNote);
-        d.step = 'intro';
+      openConversation(d, event.origin);
+      break;
+
+    case 'checkin':
+      if (event.action === 'continue') openConversation(d, 'checkin');
+      else if (event.action === 'change_goal') {
+        d.view = 'chat';
+        d.messages = [];
+        d.origin = 'checkin';
+        d.notice = null;
+        mem(d).lastConversationDay = d.todayIndex;
+        say(d, script.goalAskAgain);
+        d.stage = 'goal';
       }
       break;
 
@@ -431,206 +559,97 @@ export function reduce(state: ConversationState, turn: CustomerTurn): Conversati
       }
       break;
 
-    // ---------------------------------------------------------------- AI mode
-    case 'customerMessage':
-      d.view = 'chat';
-      d.suggestions = [];
-      customerSays(d, event.text.trim());
-      break;
-
-    case 'snapshotDecision':
+    case 'permission':
+      mem(d).permission = event.allow ? 'granted' : 'declined';
       d.permissionPending = false;
-      d.facts.dataSource = event.allow ? 'snapshot' : 'manual';
+      say(d, event.allow ? script.permissionYes : script.permissionNo, event.allow && d.origin === 'nudge' ? { kind: 'signal' } : undefined);
+      if (d.origin === 'nudge' && mem(d).allocations.length === 0 && d.stage === 'permission') ask(d, 'purpose');
+      else if (d.stage === 'permission') d.stage = 'start';
       break;
 
-    case 'aiTurn': {
-      const r = event.response;
-      const sources = validateSourceIds(r.sourceIds);
-      cite(d, sources);
-      say(d, r.reply, undefined, { ai: true, ...(sources.length ? { sources } : {}) });
-      d.suggestions = (r.suggestions ?? []).filter((s) => typeof s === 'string' && s.trim()).slice(0, 4);
-      for (const effect of r.effects ?? []) {
-        switch (effect.type) {
-          case 'factsUpdated': {
-            const changes = applyAiFacts(d, effect.patch, effect.heldElsewhere === true);
-            if (changes.length) say(d, '', { kind: 'factsUpdated', changes }, { local: true });
-            break;
-          }
-          case 'requestSnapshotPermission':
-            if (d.facts.dataSource !== 'snapshot') d.permissionPending = true;
-            break;
-          case 'scenario': {
-            const result = calculateScenario(effect.input);
-            if (result.valid) {
-              say(d, '', { kind: 'scenario', snapshot: { ...effect.input }, hypothetical: effect.hypothetical }, { local: true });
-            }
-            break;
-          }
-          case 'summaryReady':
-            say(d, '', { kind: 'action', action: 'summary' }, { local: true });
-            break;
-          case 'handoffReady': {
-            const merged = [...d.supportQuestions];
-            for (const q of effect.questions) if (q.trim() && !merged.includes(q.trim())) merged.push(q.trim());
-            d.supportQuestions = merged.slice(0, 8);
-            say(d, '', { kind: 'action', action: 'handoff' }, { local: true });
-            break;
-          }
-        }
+    case 'statePurpose':
+      switch (event.kind) {
+        case 'allocations':
+          setAllocations(d, event.allocations ?? []);
+          break;
+        case 'earmarked':
+        case 'other':
+          mem(d).prefs.earmarked = true;
+          mem(d).prefs.earmarkNote = event.note ?? null;
+          ask(d, 'earmarked');
+          break;
+        case 'no_plan':
+          say(d, script.noPlan);
+          d.stage = 'purposeAmounts';
+          break;
+        case 'debt':
+          openTopic(d, 'debt', false);
+          d.offer = null;
+          say(d, script.afterDebt);
+          d.stage = 'purposeAmounts';
+          break;
       }
       break;
-    }
 
-    case 'aiError':
-      say(d, '', { kind: 'error', code: event.code, message: event.message }, { local: true });
+    case 'askAllocationAmounts':
+      ask(d, 'purposeAmounts');
       break;
 
-    // ---------------------------------------------------------- scripted mode
-    case 'confirmGoal':
-      if (d.facts.goalConfirmed) {
+    case 'setAllocations':
+      setAllocations(d, event.allocations);
+      break;
+
+    case 'confirmAllocations':
+      if (mem(d).goal) {
         say(d, script.carryOn);
-        ask(d, d.step === 'intro' ? 'explore' : d.step);
-        break;
-      }
-      d.facts.goalConfirmed = true;
-      say(d, script.goalAck);
-      advance(d);
+        showOfferings(d);
+      } else ask(d, 'goal');
       break;
 
-    case 'chooseDataSource':
-      if (state.facts.dataSource && state.facts.dataSource !== event.source) {
-        // A route change invalidates the savings split; ask again.
-        d.facts.homeSavings = null;
-        d.facts.reservedSeparately = null;
-        d.facts.homeSavingsHeldElsewhere = false;
-      }
-      d.facts.dataSource = event.source;
-      d.permissionPending = false;
-      if (event.source === 'snapshot') say(d, script.snapshotAck, { kind: 'snapshot' });
-      else say(d, script.manualAck);
-      if (d.facts.goalConfirmed) advance(d);
+    case 'clarifyOver':
+      d.pendingAllocations = null;
+      say(d, event.heldElsewhere ? script.allocationsElsewhere : script.allocationsReenter);
+      d.stage = 'purposeAmounts';
       break;
 
-    case 'setTimelineBand':
-      d.facts.timelineBand = event.band;
-      ask(d, 'timelineMonths');
-      break;
-
-    case 'setTimelineMonths':
-      if (!isValidMonths(event.months)) {
-        say(d, script.invalidMonths);
-        break;
-      }
-      d.facts.timelineMonths = event.months;
-      d.facts.timelineBand = bandForMonths(event.months);
-      say(d, script.timelineAck(event.months));
-      advance(d);
-      break;
-
-    case 'setTarget':
-      if (!isValidAmount(event.amount) || event.amount <= 0) {
-        say(d, script.invalidTarget);
-        break;
-      }
-      d.facts.target = event.amount;
-      say(d, script.targetAck(event.amount));
-      advance(d);
-      break;
-
-    case 'askHomeSavingsAmount':
-      ask(d, 'homeSavingsAmount');
-      break;
-
-    case 'setHomeSavings': {
-      if (!isValidAmount(event.amount)) {
-        say(d, event.amount < 0 ? script.negativeAmount : script.invalidAmount);
-        break;
-      }
-      if (!applyHomeSavings(d, event.amount)) break;
-      const home = event.amount;
-      const reserved = d.facts.reservedSeparately;
-      if (home === 0) say(d, script.homeSavingsAckZero);
-      else if (d.facts.dataSource === 'snapshot' && reserved !== null && reserved > 0) say(d, script.homeSavingsAckReserved(reserved, home));
-      else if (d.facts.dataSource === 'snapshot') say(d, script.homeSavingsAckAll(home));
-      else say(d, script.homeSavingsAck(home));
-      advance(d);
+    case 'setGoal': {
+      const m = mem(d);
+      m.goal = event.goal;
+      say(d, script.goalLead[event.goal.type]);
+      const lead: TopicId =
+        event.goal.type === 'build_wealth' || event.goal.type === 'understand_options'
+          ? 'saving_vs_investing'
+          : event.goal.type === 'accessible_interest'
+            ? 'leave_in_chequing'
+            : event.goal.type === 'first_home'
+              ? 'first_home'
+              : 'saving_vs_investing';
+      openTopic(d, lead, false);
+      d.offer = null;
+      if (!m.horizon) ask(d, 'horizon');
+      else showOfferings(d);
       break;
     }
 
-    case 'confirmHeldElsewhere': {
-      const pending = d.pending;
-      d.pending = null;
-      if (!pending) {
-        ask(d, d.resumeStep ?? 'explore');
-        break;
-      }
-      if (!event.yes) {
-        d.resumeStep = null;
-        ask(d, 'homeSavingsAmount');
-        break;
-      }
-      d.facts.homeSavings = pending.amount;
-      d.facts.homeSavingsHeldElsewhere = true;
-      d.facts.reservedSeparately = 0;
-      say(d, script.heldElsewhereAck(pending.amount));
-      const resume = d.resumeStep;
-      d.resumeStep = null;
-      d.step = resume && !isTransientStep(resume) ? resume : 'explore';
-      if (scenarioInput(d.facts)) {
-        d.step = d.mode === 'scripted' ? 'explore' : d.step;
-        presentScenario(d, { withBand: false });
-      } else if (d.facts.goalConfirmed) {
-        advance(d);
-      }
-      break;
-    }
-
-    case 'setEmergencyReserve': {
-      if (event.amount === null) {
-        if (!isTransientStep(d.step)) d.resumeStep = d.step;
-        ask(d, 'reserveAmount');
-        break;
-      }
-      if (!isValidAmount(event.amount)) {
-        say(d, event.amount < 0 ? script.negativeAmount : script.invalidAmount);
-        break;
-      }
-      const savings = snapshotSavings(d);
-      if (savings !== null && event.amount > savings) {
-        if (!isTransientStep(d.step)) d.resumeStep = d.step;
-        say(d, script.reserveTooLarge(event.amount, savings));
-        d.step = 'reserveAmount';
-        break;
-      }
-      d.facts.reservedSeparately = event.amount;
-      if (savings !== null) {
-        d.facts.homeSavings = savings - event.amount;
-        d.facts.homeSavingsHeldElsewhere = false;
-        say(d, script.homeSavingsAckReserved(event.amount, d.facts.homeSavings));
-      } else {
-        say(d, script.reserveManualAck(event.amount, d.facts.homeSavings));
-      }
-      afterFactChange(d, { withBand: false });
-      break;
-    }
-
-    case 'invalidAmount':
-      say(d, event.reason === 'negative' ? script.negativeAmount : script.unclearAmount);
+    case 'setHorizon':
+      mem(d).horizon = event.horizon;
+      say(d, script.horizonAck[event.horizon]);
+      showOfferings(d);
       break;
 
-    case 'setMonthly': {
-      if (!isValidAmount(event.amount)) {
-        say(d, event.amount < 0 ? script.negativeAmount : script.invalidAmount);
-        break;
-      }
-      d.facts.monthly = event.amount;
-      const cf = sharedCashFlow(d);
-      if (event.amount === 0) say(d, script.monthlyZero);
-      else if (cf !== null && cf > 0 && event.amount > cf) say(d, script.monthlyAboveCashFlow(event.amount, cf));
-      else say(d, script.monthlyAck(event.amount));
-      advance(d);
+    case 'showOfferings':
+      showOfferings(d);
       break;
-    }
+
+    case 'chooseNextStep':
+      chooseNextStep(d, event.step);
+      break;
+
+    case 'pickNextStep':
+      say(d, script.nextStepAsk);
+      d.stage = 'explore';
+      d.offer = 'nextSteps';
+      break;
 
     case 'openTopic':
       openTopic(d, event.topic, false);
@@ -646,101 +665,29 @@ export function reduce(state: ConversationState, turn: CustomerTurn): Conversati
       d.offer = 'investment';
       break;
 
+    case 'startScenario':
+      ask(d, 'scenario');
+      break;
+
+    case 'runScenario': {
+      const r = projectWithoutReturns(event.input);
+      if (!r.valid) {
+        say(d, Object.values(r.errors)[0] ?? script.unclearAmount);
+        d.stage = 'scenario';
+        break;
+      }
+      mem(d).scenario = event.input;
+      say(d, script.scenarioResult(r, event.input.months), { kind: 'scenario', input: event.input });
+      d.stage = 'explore';
+      break;
+    }
+
+    case 'invalidAmount':
+      say(d, event.reason === 'negative' ? script.negativeAmount : script.unclearAmount);
+      break;
+
     case 'prepareSupport':
-    case 'showHandoff': {
-      const fromInvestment = event.type === 'prepareSupport' && state.offer === 'investment';
-      const merged = [...d.supportQuestions];
-      for (const q of suggestedQuestions(d, fromInvestment)) if (!merged.includes(q)) merged.push(q);
-      d.supportQuestions = merged;
-      say(d, script.supportPrepared);
-      d.view = 'handoff';
-      break;
-    }
-
-    case 'continue':
-      ask(d, d.step);
-      break;
-
-    case 'back': {
-      if (isTransientStep(d.step)) {
-        const resume = d.resumeStep ?? (d.facts.goalConfirmed ? 'explore' : 'intro');
-        d.resumeStep = null;
-        d.pending = null;
-        say(d, script.carryOn);
-        ask(d, resume);
-        break;
-      }
-      const prev = previousStep(d.step);
-      ask(d, prev ?? d.step);
-      break;
-    }
-
-    case 'pickEdit':
-      d.view = 'chat';
-      if (!isTransientStep(d.step)) d.resumeStep = d.step;
-      ask(d, 'editPicker');
-      break;
-
-    case 'startEdit':
-      d.view = 'chat';
-      if (!isTransientStep(d.step)) d.resumeStep = d.step;
-      ask(d, EDIT_STEP[event.field]);
-      break;
-
-    case 'updateFacts': {
-      const changes: string[] = [];
-      const p = event.patch;
-      const bandBefore = d.facts.timelineBand;
-      if (p.timelineMonths !== undefined && p.timelineMonths !== null) {
-        if (!isValidMonths(p.timelineMonths)) {
-          say(d, script.invalidMonths);
-          break;
-        }
-        d.facts.timelineMonths = p.timelineMonths;
-        d.facts.timelineBand = bandForMonths(p.timelineMonths);
-        changes.push(`timeline ${horizon(p.timelineMonths)}`);
-      }
-      if (p.target !== undefined && p.target !== null) {
-        if (!isValidAmount(p.target) || p.target <= 0) {
-          say(d, p.target < 0 ? script.negativeAmount : script.invalidTarget);
-          break;
-        }
-        d.facts.target = p.target;
-        changes.push(`savings target ${money(p.target)}`);
-      }
-      if (p.monthly !== undefined && p.monthly !== null) {
-        if (!isValidAmount(p.monthly)) {
-          say(d, p.monthly < 0 ? script.negativeAmount : script.invalidAmount);
-          break;
-        }
-        d.facts.monthly = p.monthly;
-        changes.push(`monthly amount ${money(p.monthly)}`);
-      }
-      if (p.homeSavings !== undefined && p.homeSavings !== null) {
-        if (!isValidAmount(p.homeSavings)) {
-          say(d, p.homeSavings < 0 ? script.negativeAmount : script.invalidAmount);
-          break;
-        }
-        if (changes.length) say(d, script.updated(changes));
-        if (!applyHomeSavings(d, p.homeSavings)) break;
-        const reserved = d.facts.reservedSeparately;
-        say(d, script.updated([`starting savings ${money(p.homeSavings)}` + (d.facts.dataSource === 'snapshot' && reserved ? `, with ${money(reserved)} kept separate` : '')]));
-        afterFactChange(d, { withBand: bandBefore !== d.facts.timelineBand && !event.brief });
-        break;
-      }
-      if (changes.length) say(d, script.updated(changes));
-      afterFactChange(d, { withBand: bandBefore !== d.facts.timelineBand && !event.brief });
-      break;
-    }
-
-    case 'pickNextSteps':
-      ask(d, 'nextSteps');
-      break;
-
-    case 'chooseNextSteps':
-      d.nextSteps = event.steps;
-      say(d, script.nextStepsAck(event.steps.length));
-      d.step = 'explore';
+      prepareSupport(d);
       break;
 
     case 'showSummary':
@@ -748,18 +695,20 @@ export function reduce(state: ConversationState, turn: CustomerTurn): Conversati
       d.view = 'summary';
       break;
 
+    case 'continue':
+      ask(d, d.stage === 'start' ? 'goal' : d.stage);
+      break;
+
     case 'requestRestart':
-      if (!isTransientStep(d.step)) d.resumeStep = d.step;
+      if (d.stage !== 'confirmRestart') d.resumeStage = d.stage;
       ask(d, 'confirmRestart');
       break;
 
     case 'cancel': {
-      const resume = d.resumeStep ?? (d.facts.goalConfirmed ? 'explore' : 'intro');
-      d.resumeStep = null;
-      d.pending = null;
+      const resume = d.resumeStage ?? 'explore';
+      d.resumeStage = null;
       say(d, script.carryOn);
-      if (resume === 'explore' && !scenarioInput(d.facts) && d.facts.goalConfirmed) advance(d);
-      else ask(d, resume);
+      d.stage = resume;
       break;
     }
 
@@ -772,7 +721,35 @@ export function reduce(state: ConversationState, turn: CustomerTurn): Conversati
       say(d, script.help);
       d.offer = 'menu';
       break;
+
+    // ---- AI mode
+    case 'customerMessage':
+      d.view = 'chat';
+      d.suggestions = [];
+      customerSays(d, event.text.trim());
+      break;
+
+    case 'aiTurn': {
+      const r = event.response;
+      const sources = validateSourceIds(r.sourceIds);
+      cite(d, sources);
+      say(d, r.reply, undefined, { ai: true, ...(sources.length ? { sources } : {}) });
+      d.suggestions = (r.suggestions ?? []).filter((s) => typeof s === 'string' && s.trim()).slice(0, 4);
+      applyAiEffects(d, r.effects ?? []);
+      break;
+    }
+
+    case 'aiError':
+      say(d, '', { kind: 'error', code: event.code, message: event.message }, { local: true });
+      break;
   }
 
   return d;
+}
+
+/** Topics to suggest next, based on the goal and what's been covered. */
+export function suggestedTopics(state: ConversationState, max = 3): TopicId[] {
+  const seeds = state.activeTopic ? TOPICS[state.activeTopic].related : [];
+  const goalTopics = TOPICS_FOR_GOAL[state.memory.goal?.type ?? 'understand_options'] ?? [];
+  return [...seeds, ...goalTopics].filter((t, i, arr) => arr.indexOf(t) === i && !state.memory.topicsExplored.includes(t)).slice(0, max);
 }

@@ -1,6 +1,6 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { AiRequestError } from './conversation/aiClient';
 import type { ChatRequest, ChatResponse, StatusResponse } from './shared/api';
@@ -8,127 +8,142 @@ import type { ChatRequest, ChatResponse, StatusResponse } from './shared/api';
 beforeAll(() => {
   vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
 });
+beforeEach(() => {
+  window.localStorage.clear();
+});
 
 const SLOW = { timeout: 3000 };
-const noAi = async (): Promise<StatusResponse> => ({ aiAvailable: false, model: null, reason: 'Gemini conversation is not configured. Add GEMINI_API_KEY to .env.local (key from Google AI Studio) and restart the server.' });
+const noAi = async (): Promise<StatusResponse> => ({ aiAvailable: false, model: null, reason: 'Gemini conversation is not configured. Add GEMINI_API_KEY to .env.local.' });
 const aiOn = async (): Promise<StatusResponse> => ({ aiAvailable: true, model: 'test-model', reason: null });
 
-async function reply(user: ReturnType<typeof userEvent.setup>, name: string | RegExp) {
+type User = ReturnType<typeof userEvent.setup>;
+async function reply(user: User, name: string | RegExp) {
   await user.click(await screen.findByRole('button', { name }, SLOW));
 }
+async function openSettings(user: User) {
+  await user.click(screen.getByRole('button', { name: /Demo settings/ }));
+  return screen.getByRole('dialog', { name: 'Demo settings' });
+}
 
-describe('scripted demo mode (no API key)', () => {
-  it('is clearly labelled and answers education questions immediately', async () => {
+describe('scripted demo: the proactive loop', () => {
+  it('nudge → permission → allocations → goal → offerings → next step → summary', async () => {
     const user = userEvent.setup();
     render(<App status={noAi} />);
+
+    // Dashboard starts with a useful nudge built from the signal.
+    expect(screen.getByRole('heading', { name: /chequing balance has stayed above \$25,000 over the past three months/ })).toBeInTheDocument();
+    await user.click(screen.getByText('Why am I seeing this?'));
+    expect(screen.getByText(/never below \$25,000/)).toBeInTheDocument();
+    expect(screen.queryByText(/too much|doing nothing|should invest/i)).not.toBeInTheDocument();
+
     await user.click(screen.getByRole('button', { name: 'Explore with Sunny' }));
-    expect(screen.getByText('Hi Alex, what would you like to understand about saving for your first home?')).toBeInTheDocument();
     expect(screen.getByText('Scripted demo')).toBeInTheDocument();
-    // No goal panel until there is something to show.
-    expect(screen.queryByRole('complementary', { name: 'Your goal at a glance' })).not.toBeInTheDocument();
+    await reply(user, 'Yes, use my account details');
+    await reply(user, 'I need $3,000 for bills and $10,000 for emergencies.');
+    expect(await screen.findByText(/That leaves \$15,000 not yet assigned to a purpose/, {}, SLOW)).toBeInTheDocument();
+    await reply(user, 'Yes, that’s right');
+    await reply(user, 'I want to build wealth, but I don’t know how investing works.');
+    await reply(user, 'More than 5 years away');
+    expect(await screen.findByLabelText('Tangerine offerings to learn about', {}, SLOW)).toBeInTheDocument();
+    expect(screen.getAllByText('Tangerine Investment Funds').length).toBeGreaterThan(0);
+    await reply(user, 'Learn about investment risk first');
+    expect(await screen.findByText(/I’ll remember that you wanted to understand investment risk/, {}, SLOW)).toBeInTheDocument();
 
-    await user.type(screen.getByLabelText('Message Sunny'), 'Does Tangerine offer an FHSA?{Enter}');
-    expect(await screen.findByText(/I can’t confirm that/, {}, SLOW)).toBeInTheDocument();
-    expect(screen.getAllByText(/Sources \(/).length).toBeGreaterThan(0);
-
-    await user.click(screen.getByRole('button', { name: /Demo settings/ }));
-    const dialog = screen.getByRole('dialog', { name: 'Demo settings' });
-    expect(within(dialog).getByText('Replies are pre-written and keyword-matched. This is not live AI.')).toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: 'Live AI' })).toBeDisabled();
-    expect(within(dialog).getByText(/GEMINI_API_KEY/)).toBeInTheDocument();
-  }, 20000);
-
-  it('runs the optional savings-goal journey to a summary', async () => {
-    const user = userEvent.setup();
-    render(<App status={noAi} />);
-    await user.click(screen.getByRole('button', { name: 'Explore with Sunny' }));
-    await reply(user, 'Help me explore a savings goal.');
-    await reply(user, 'Use my account snapshot.');
-    await reply(user, 'In 1–5 years');
-    await reply(user, 'Confirm');
-    await reply(user, 'Confirm');
-    await reply(user, 'Keep $10,000 aside for emergencies');
-    expect(await screen.findByText(/I’ll keep that \$10,000 separate and use \$14,000/, {}, SLOW)).toBeInTheDocument();
-    const monthly = await screen.findByLabelText('Monthly amount to explore', {}, SLOW);
-    await user.clear(monthly);
-    await user.type(monthly, '700');
-    await reply(user, 'Confirm');
-    expect(await screen.findByText(/\$10,800 short of your \$50,000 target/, {}, SLOW)).toBeInTheDocument();
     await reply(user, 'See my summary');
-    const scenario = await screen.findByRole('region', { name: 'Monthly-saving scenario explored' }, SLOW);
-    expect(within(scenario).getByText('$39,200')).toBeInTheDocument();
-  }, 20000);
+    expect(await screen.findByRole('heading', { name: 'Your conversation with Sunny' }, SLOW)).toBeInTheDocument();
+    expect(screen.getByText('Build wealth over time')).toBeInTheDocument();
+    expect(screen.getByText('Learn about investment risk first')).toBeInTheDocument();
+    expect(screen.getByText(/comfort with investment risk hasn’t been assessed/)).toBeInTheDocument();
+  }, 30000);
 
-  it('switching presets resets the conversation', async () => {
+  it('a later visit shows a check-in based on the saved next step; “Stop these check-ins” works', async () => {
     const user = userEvent.setup();
     render(<App status={noAi} />);
     await user.click(screen.getByRole('button', { name: 'Explore with Sunny' }));
-    await reply(user, 'Explain home-saving accounts.');
-    await user.click(screen.getByRole('button', { name: /Demo settings/ }));
-    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /Jordan: buying within one year/ }));
-    expect(screen.getByRole('heading', { name: 'Welcome back, Jordan' })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Explore with Sunny' }));
-    expect(screen.queryByText(/main registered options/)).not.toBeInTheDocument();
-  }, 20000);
+    await reply(user, 'Yes, use my account details');
+    await reply(user, 'I need $3,000 for bills and $10,000 for emergencies.');
+    await reply(user, 'Yes, that’s right');
+    await reply(user, 'I want to build wealth, but I don’t know how investing works.');
+    await reply(user, 'More than 5 years away');
+    await reply(user, 'Learn about investment risk first');
+    await screen.findByText(/I’ll remember that you wanted to understand investment risk/, {}, SLOW);
+
+    const dialog = await openSettings(user);
+    await user.click(within(dialog).getByRole('button', { name: /Simulate a later visit/ }));
+    expect(screen.getByRole('heading', { name: 'Last time, you wanted to understand investment risk before deciding what to do. Would you like to pick that up?' })).toBeInTheDocument();
+    expect(screen.getByText('Build wealth over time')).toBeInTheDocument(); // goal shown on the dashboard
+    expect(screen.getByText(/Next step: Learn about investment risk first/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Stop these check-ins' }));
+    expect(screen.getByText(/Check-ins are off/)).toBeInTheDocument();
+
+    const again = await openSettings(user);
+    await user.click(within(again).getByRole('button', { name: /Simulate a later visit/ }));
+    expect(screen.queryByRole('button', { name: 'Stop these check-ins' })).not.toBeInTheDocument();
+  }, 30000);
+
+  it('“Not now” and “already set aside” are respected', async () => {
+    const user = userEvent.setup();
+    render(<App status={noAi} />);
+    await user.click(screen.getByRole('button', { name: 'Not now' }));
+    expect(screen.getByText(/won’t bring this up for a while/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Explore with Sunny' })).not.toBeInTheDocument();
+
+    const dialog = await openSettings(user);
+    await user.click(within(dialog).getByRole('button', { name: /Reset this scenario/ }));
+    await user.click(screen.getByRole('button', { name: 'This money is already set aside' }));
+    expect(screen.getByText(/won’t suggest exploring this balance again/)).toBeInTheDocument();
+    const d2 = await openSettings(user);
+    await user.click(within(d2).getByRole('button', { name: /Simulate a later visit/ }));
+    expect(screen.queryByRole('button', { name: 'Explore with Sunny' })).not.toBeInTheDocument();
+  }, 30000);
+
+  it('Scenario C shows a normal dashboard with no manufactured opportunity, and Sunny is still available', async () => {
+    const user = userEvent.setup();
+    render(<App status={noAi} />);
+    const dialog = await openSettings(user);
+    await user.click(within(dialog).getByRole('button', { name: /C · Sam: no qualifying signal/ }));
+    expect(screen.getByRole('heading', { name: 'Welcome back, Sam' })).toBeInTheDocument();
+    expect(screen.queryByText(/Want to explore whether some of it/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Ask Sunny' }));
+    await user.type(screen.getByLabelText('Message Sunny'), 'What’s the difference between a GIC and an investment fund?{Enter}');
+    expect(await screen.findByText(/They work very differently/, {}, SLOW)).toBeInTheDocument();
+  }, 30000);
 });
 
 describe('live AI mode (mocked API)', () => {
-  it('sends the conversation, renders sources and suggestions, and handles permission', async () => {
+  it('asks permission before account details reach the model', async () => {
     const user = userEvent.setup();
     const requests: ChatRequest[] = [];
     const chat = vi.fn(async (body: ChatRequest): Promise<ChatResponse> => {
       requests.push(body);
-      if (requests.length === 1) {
-        return {
-          reply: 'An FHSA is a registered account for first-time buyers. **What’s inside it** decides the risk.',
-          sourceIds: ['gov-fhsa-overview', 'not-a-real-id'],
-          suggestions: ['Does Tangerine offer one?'],
-          effects: [],
-        };
-      }
-      if (requests.length === 2) {
-        return { reply: 'May I look at your account snapshot to answer that?', sourceIds: [], suggestions: [], effects: [{ type: 'requestSnapshotPermission', reason: 'To see balances' }] };
-      }
-      return { reply: 'Your snapshot shows savings of $24,000.', sourceIds: [], suggestions: [], effects: [] };
+      return { reply: 'Thanks. That leaves $15,000 not yet assigned to a purpose.', sourceIds: [], suggestions: ['Is a TFSA an investment?'], effects: [] };
     });
     render(<App status={aiOn} chat={chat} />);
-    await user.click(screen.getByRole('button', { name: 'Explore with Sunny' }));
+    await user.click(await screen.findByRole('button', { name: 'Explore with Sunny' }));
     expect(screen.queryByText('Scripted demo')).not.toBeInTheDocument();
-
-    await reply(user, 'Explain home-saving accounts.');
-    expect(await screen.findByText(/registered account for first-time buyers/, {}, SLOW)).toBeInTheDocument();
-    expect(screen.getByText('What’s inside it').tagName).toBe('STRONG');
-    await user.click(screen.getByText('Sources (1)'));
-    expect(screen.getByRole('link', { name: /Canada Revenue Agency: First Home Savings Account/ })).toHaveAttribute(
-      'href',
-      'https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/first-home-savings-account.html',
-    );
-    expect(requests[0].snapshot).toBeNull();
-
-    await user.type(screen.getByLabelText('Message Sunny'), 'How much do I have saved?{Enter}');
-    await reply(user, 'Yes, use my account snapshot');
-    await screen.findByText(/snapshot shows savings/, {}, SLOW);
-    expect(requests[2].snapshotPermission).toBe('granted');
-    expect(requests[2].snapshot?.savingsBalance).toBe(24000);
-  }, 20000);
+    expect(chat).not.toHaveBeenCalled(); // the opening and permission question are local
+    await reply(user, 'Keep it general');
+    await reply(user, 'I need $3,000 for bills and $10,000 for emergencies.');
+    await screen.findByText(/not yet assigned/, {}, SLOW);
+    expect(requests[0].permission).toBe('declined');
+    expect(requests[0].account).toBeNull();
+  }, 30000);
 
   it('shows an honest error with retry, and only switches to scripted when chosen', async () => {
     const user = userEvent.setup();
     let fail = true;
     const chat = vi.fn(async (): Promise<ChatResponse> => {
-      if (fail) throw new AiRequestError('timeout', 'The AI service took too long to respond.');
-      return { reply: 'A TFSA is flexible…', sourceIds: ['gov-tfsa'], suggestions: [], effects: [] };
+      if (fail) throw new AiRequestError('rate_limited', 'Gemini’s free-tier usage limit has been reached.');
+      return { reply: 'A TFSA is an account, not an investment.', sourceIds: ['gov-tfsa'], suggestions: [], effects: [] };
     });
     render(<App status={aiOn} chat={chat} />);
-    await user.click(screen.getByRole('button', { name: 'Explore with Sunny' }));
-    await user.type(screen.getByLabelText('Message Sunny'), 'How is a TFSA different?{Enter}');
-    expect(await screen.findByText('The AI service took too long to respond.', {}, SLOW)).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: 'Ask Sunny' }));
+    await user.type(screen.getByLabelText('Message Sunny'), 'Is a TFSA an investment?{Enter}');
+    expect(await screen.findByText('Gemini’s free-tier usage limit has been reached.', {}, SLOW)).toBeInTheDocument();
     expect(screen.queryByText('Scripted demo')).not.toBeInTheDocument();
-
     fail = false;
     await reply(user, 'Try again');
-    expect(await screen.findByText('A TFSA is flexible…', {}, SLOW)).toBeInTheDocument();
-    expect(chat).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText('A TFSA is an account, not an investment.', {}, SLOW)).toBeInTheDocument();
 
     fail = true;
     await user.type(screen.getByLabelText('Message Sunny'), 'Can I lose money?{Enter}');
@@ -136,18 +151,5 @@ describe('live AI mode (mocked API)', () => {
     expect(await screen.findByText(/Switched to the scripted demo/, {}, SLOW)).toBeInTheDocument();
     expect(screen.getByText('Scripted demo')).toBeInTheDocument();
     expect(await screen.findByText(/It depends on what you hold/, {}, SLOW)).toBeInTheDocument();
-  }, 20000);
-
-  it('missing key on the server is explained, with the scripted demo offered', async () => {
-    const user = userEvent.setup();
-    const chat = vi.fn(async (): Promise<ChatResponse> => {
-      throw new AiRequestError('not_configured', 'Gemini conversation is not configured. Add GEMINI_API_KEY to .env.local (key from Google AI Studio) and restart the server.');
-    });
-    render(<App status={aiOn} chat={chat} />);
-    await user.click(screen.getByRole('button', { name: 'Explore with Sunny' }));
-    await user.type(screen.getByLabelText('Message Sunny'), 'Hi{Enter}');
-    expect(await screen.findByText(/not configured/, {}, SLOW)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Use scripted demo instead' })).toBeInTheDocument();
-  }, 20000);
+  }, 30000);
 });

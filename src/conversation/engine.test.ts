@@ -1,303 +1,305 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_PROFILE, PRESETS } from '../data/customers';
-import { calculateScenario } from '../lib/calc';
+import { buildPreset } from '../data/customers';
 import type { ChatResponse } from '../shared/api';
 import { buildChatRequest } from './aiClient';
-import { createInitialState, reduce, scenarioInput } from './engine';
+import { allocationSnapshot, createInitialState, dashboardCard, pendingCheckin, reduce } from './engine';
 import { interpretText } from './intents';
 import { getPrompt } from './prompts';
 import { buildSummary } from './summary';
 import type { ConversationState, SunnyEvent } from './types';
 
-const run = (state: ConversationState, ...events: SunnyEvent[]) => events.reduce((s, event) => reduce(s, { event }), state);
-const typed = (state: ConversationState, text: string) => reduce(state, interpretText(text, state));
+const run = (s: ConversationState, ...events: SunnyEvent[]) => events.reduce((x, event) => reduce(x, { event }), s);
+const typed = (s: ConversationState, text: string) => reduce(s, interpretText(text, s));
 const lastSunny = (s: ConversationState) => [...s.messages].reverse().find((m) => m.role === 'sunny' && m.text)!.text;
 const allText = (s: ConversationState) => s.messages.map((m) => m.text).join('\n');
-const opened = () => run(createInitialState(DEFAULT_PROFILE), { type: 'open' });
+const fresh = (id = 'alex') => createInitialState(buildPreset(id));
 
-/** Click the quick reply with this label in the current prompt. */
-function click(state: ConversationState, label: string) {
-  const r = getPrompt(state).replies.find((x) => x.label === label);
-  if (!r) throw new Error(`No reply "${label}" at step ${state.step}: ${getPrompt(state).replies.map((x) => x.label).join(' | ')}`);
-  return reduce(state, r.turn);
+function click(s: ConversationState, label: string) {
+  const r = getPrompt(s).replies.find((x) => x.label === label);
+  if (!r) throw new Error(`No reply "${label}" at stage ${s.stage}: ${getPrompt(s).replies.map((x) => x.label).join(' | ')}`);
+  return reduce(s, r.turn);
 }
 
-/** Alex's goal exploration up to the home-savings question, via the account snapshot. */
-function alexToHomeSavings() {
-  let s = click(opened(), 'Help me explore a savings goal.');
-  s = click(s, 'Use my account snapshot.');
-  s = click(s, 'In 1–5 years');
-  s = run(s, { type: 'setTimelineMonths', months: 36 }, { type: 'setTarget', amount: 50000 });
-  expect(s.step).toBe('homeSavings');
+/** Alex: nudge → permission → "$3,000 for bills and $10,000 for emergencies" → confirmed. */
+function alexConfirmed() {
+  let s = run(fresh(), { type: 'open', origin: 'nudge' });
+  s = click(s, 'Yes, use my account details');
+  s = click(s, 'I need $3,000 for bills and $10,000 for emergencies.');
+  s = click(s, 'Yes, that’s right');
   return s;
 }
 
-describe('education-first opening', () => {
-  it('greets with an open question and optional starters', () => {
-    const s = opened();
-    expect(s.messages[0].text).toBe('Hi Alex, what would you like to understand about saving for your first home?');
-    expect(getPrompt(s).replies.map((r) => r.label)).toEqual([
-      'I don’t know where to start.',
+describe('dashboard signal and nudge', () => {
+  it('shows a nudge for Alex built from the actual signal, and none for Sam', () => {
+    const card = dashboardCard(fresh());
+    expect(card?.kind).toBe('nudge');
+    if (card?.kind === 'nudge') expect(card.signal.evidence.daysBelowThreshold).toBe(0);
+    expect(dashboardCard(fresh('sam'))).toBeNull();
+  });
+
+  it('“Not now” hides the nudge until the snooze ends', () => {
+    let s = run(fresh(), { type: 'dismissNudge' });
+    expect(dashboardCard(s)?.kind).toBe('notice');
+    s = run(s, { type: 'simulateLaterVisit', days: 15 });
+    expect(dashboardCard(s)).toBeNull();
+    s = run(s, { type: 'simulateLaterVisit', days: 15 });
+    expect(dashboardCard(s)?.kind).toBe('nudge');
+  });
+
+  it('“This money is already set aside” suppresses the nudge on later visits (undo restores it)', () => {
+    let s = run(fresh(), { type: 'earmarkFromDashboard' });
+    expect(dashboardCard(s)).toMatchObject({ kind: 'notice', undo: 'earmark' });
+    expect(dashboardCard(run(s, { type: 'undoEarmark' }))?.kind).toBe('nudge');
+    s = run(s, { type: 'simulateLaterVisit', days: 30 }, { type: 'simulateLaterVisit', days: 30 });
+    expect(dashboardCard(s)).toBeNull();
+  });
+
+  it('is not repeated after the customer engaged with it', () => {
+    const s = run(alexConfirmed(), { type: 'setView', view: 'dashboard' }, { type: 'simulateLaterVisit', days: 30 });
+    expect(dashboardCard(s)).toBeNull();
+  });
+
+  it('review flag and short history suppress the nudge', () => {
+    expect(dashboardCard(run(fresh(), { type: 'setProfileFlags', reviewFlag: true }))).toBeNull();
+    expect(dashboardCard(run(fresh(), { type: 'setProfileFlags', historyDaysAvailable: 30 }))).toBeNull();
+  });
+});
+
+describe('main demo loop (scripted)', () => {
+  it('asks permission before using account details, then what the money is for', () => {
+    let s = run(fresh(), { type: 'open', origin: 'nudge' });
+    expect(s.stage).toBe('permission');
+    expect(allText(s)).toMatch(/stayed above \$25,000 for the past 90 days/);
+    expect(allText(s)).not.toMatch(/too much|doing nothing|should invest|available to invest/i);
+    s = click(s, 'Yes, use my account details');
+    expect(s.memory.permission).toBe('granted');
+    expect(lastSunny(s)).toMatch(/upcoming expenses, emergencies, or something else/);
+  });
+
+  it('allocations: $28,000 − $3,000 − $10,000 = $15,000 not yet assigned; savings not added', () => {
+    let s = run(fresh(), { type: 'open', origin: 'nudge' });
+    s = click(s, 'Yes, use my account details');
+    s = click(s, 'I need $3,000 for bills and $10,000 for emergencies.');
+    const snap = allocationSnapshot(s);
+    expect(snap).toMatchObject({ balance: 28_000, unassigned: 15_000, savingsBalance: 12_000 });
+    expect(lastSunny(s)).toMatch(/leaves \$15,000 not yet assigned to a purpose/);
+    expect(lastSunny(s)).toMatch(/\$12,000 savings balance is separate/);
+    expect(allText(s)).not.toMatch(/available to invest/i);
+  });
+
+  it('goal → education first → one follow-up → offerings → next step', () => {
+    let s = alexConfirmed();
+    expect(lastSunny(s)).toBe('What would you like this money to help you do?');
+    s = click(s, 'I want to build wealth, but I don’t know how investing works.');
+    expect(s.memory.goal?.type).toBe('build_wealth');
+    expect(allText(s)).toMatch(/Investing means buying things like funds/);
+    expect(lastSunny(s)).toMatch(/when might you need this money/);
+    s = click(s, 'More than 5 years away');
+    const offers = s.messages.find((m) => m.card?.kind === 'offerings')?.card;
+    expect(offers).toMatchObject({ kind: 'offerings' });
+    if (offers?.kind === 'offerings') expect(offers.ids).toEqual(expect.arrayContaining(['investment-funds', 'tfsa', 'rsp', 'gic']));
+    expect(allText(s)).toMatch(/isn’t a recommendation, and they aren’t the only options/);
+    s = click(s, 'Learn about investment risk first');
+    expect(s.memory.nextStep).toBe('learn_risk');
+    expect(allText(s)).toMatch(/you can lose money/);
+    const sum = buildSummary(s);
+    expect(sum.prompted).toMatch(/stayed above \$25,000 for 90 days/);
+    expect(sum.goal).toBe('Build wealth over time');
+    expect(sum.nextStep).toBe('Learn about investment risk first');
+    expect(sum.offerings).toContain('Tangerine Investment Funds');
+    expect(sum.unknowns.join(' ')).toMatch(/comfort with investment risk/);
+  });
+});
+
+describe('natural answers about the money', () => {
+  const atPurpose = () => click(run(fresh(), { type: 'open', origin: 'nudge' }), 'Yes, use my account details');
+
+  it('understands each example answer', () => {
+    expect(typed(atPurpose(), 'I’m buying a home next year.').memory.prefs).toMatchObject({ earmarked: true, earmarkNote: 'for a home purchase' });
+    expect(typed(atPurpose(), 'That money is for tuition.').memory.prefs).toMatchObject({ earmarked: true, earmarkNote: 'for tuition' });
+    expect(typed(atPurpose(), 'I don’t have a goal. I just haven’t done anything with it.').stage).toBe('purposeAmounts');
+    const debt = typed(atPurpose(), 'I have debt at another bank.');
+    expect(debt.memory.topicsExplored).toContain('debt');
+    expect(allText(debt)).toMatch(/I can only see your Tangerine accounts/);
+  });
+
+  it('allocations above the balance need clarification and are not saved', () => {
+    const s = typed(atPurpose(), 'I need $20,000 for bills and $10,000 for emergencies.');
+    expect(s.stage).toBe('clarifyOver');
+    expect(s.memory.allocations).toEqual([]);
+    expect(lastSunny(s)).toMatch(/\$30,000, which is more than the \$28,000/);
+  });
+
+  it('negative amounts are rejected', () => {
+    expect(typed(atPurpose(), 'Keep -500 for emergencies').stage).toBe('purpose');
+    expect(lastSunny(typed(atPurpose(), 'Keep -500 for emergencies'))).toMatch(/negative amount/);
+  });
+
+  it('Priya’s tuition answer suppresses future nudges', () => {
+    let s = run(createInitialState(buildPreset('priya')), { type: 'open', origin: 'nudge' });
+    s = click(s, 'Yes, use my account details');
+    s = click(s, 'That money is for my tuition in January.');
+    expect(lastSunny(s)).toMatch(/set aside for tuition and won’t suggest exploring it again/);
+    s = run(s, { type: 'simulateLaterVisit', days: 30 });
+    expect(dashboardCard(s)).toBeNull();
+  });
+});
+
+describe('education before any goal', () => {
+  it('answers the example questions without a goal or account data', () => {
+    let s = run(fresh(), { type: 'open', origin: 'self' });
+    for (const q of [
+      'Can I lose money?',
+      'Is a TFSA an investment?',
+      'What’s the difference between a GIC and an investment fund?',
+      'What if I need the money next year?',
+      'Why wouldn’t I just leave it in chequing?',
+      'I’m overwhelmed. Explain it more simply.',
       'What can Tangerine help me with?',
-      'Explain home-saving accounts.',
-      'Help me explore a savings goal.',
-    ]);
+      'I’m not ready to decide.',
+    ]) {
+      s = typed(s, q);
+      expect(lastSunny(s), q).not.toMatch(/I’m not sure I followed/);
+    }
+    expect(s.memory.topicsExplored).toEqual(expect.arrayContaining(['risk', 'account_vs_holdings', 'gic_vs_fund', 'need_next_year', 'leave_in_chequing', 'tangerine_help', 'not_ready']));
+    expect(s.memory.goal).toBeNull();
+    expect(s.memory.allocations).toEqual([]);
+    expect(allText(s)).not.toMatch(/first-home saving/);
   });
 
-  it('answers educational questions before any onboarding, without asking for account access', () => {
-    let s = typed(opened(), 'What is an FHSA?');
-    expect(lastSunny(s)).toMatch(/registered account/);
-    expect(s.messages.at(-1)!.sources).toContain('gov-fhsa-overview');
-    s = typed(s, 'Is an FHSA an investment?');
-    expect(lastSunny(s)).toMatch(/Not by itself/);
-    s = typed(s, 'Does Tangerine offer one?');
-    expect(lastSunny(s)).toMatch(/can’t confirm/);
-    s = typed(s, 'Can I take the money out whenever I want?');
-    s = typed(s, 'Can I lose money?');
-    s = typed(s, 'What can Tangerine actually help me with?');
-    s = typed(s, 'I don’t know how much I need yet.');
-    expect(lastSunny(s)).toMatch(/don’t need a number yet/);
-    s = typed(s, 'I’m overwhelmed. Can you explain that more simply?');
-    expect(lastSunny(s)).toMatch(/minimum you need to put down/);
-    expect(s.facts.dataSource).toBeNull();
-    expect(s.facts.goalConfirmed).toBe(false);
-    expect(allText(s)).not.toMatch(/account snapshot/);
-    expect(allText(s)).not.toMatch(/can’t help with that/);
-  });
-
-  it('offers related follow-ups and the optional goal explorer after a topic', () => {
-    const s = click(opened(), 'Explain home-saving accounts.');
-    const labels = getPrompt(s).replies.map((r) => r.label);
-    expect(labels).toContain('Is an FHSA an investment?');
-    expect(labels).toContain('Help me explore a savings goal.');
+  it('keeps individual recommendations out of scope', () => {
+    const s = typed(run(fresh(), { type: 'open', origin: 'self' }), 'Should I invest the $15,000?');
+    expect(lastSunny(s)).toMatch(/can’t tell you whether to invest this money/);
   });
 });
 
-describe('snapshot permission', () => {
-  it('is asked only when exploring a personal goal, and both routes work', () => {
-    let s = click(opened(), 'Help me explore a savings goal.');
-    expect(s.step).toBe('permission');
-    const viaSnapshot = click(s, 'Use my account snapshot.');
-    expect(viaSnapshot.facts.dataSource).toBe('snapshot');
-    expect(viaSnapshot.messages.some((m) => m.card?.kind === 'snapshot')).toBe(true);
-    s = click(s, 'I’d rather enter the details myself.');
-    expect(s.facts.dataSource).toBe('manual');
-    expect(buildChatRequest(s).snapshot).toBeNull();
-    expect(buildChatRequest(viaSnapshot).snapshot?.savingsBalance).toBe(24000);
-    // Only snapshot fields are sent: the customer's own pre-filled answers are never included.
-    expect(JSON.stringify(buildChatRequest(viaSnapshot).snapshot)).not.toMatch(/emergencyReserve|homeTarget/);
+describe('corrections update the summary and scenario', () => {
+  it('“Actually, keep $8,000 for emergencies” replaces the earlier amount', () => {
+    let s = click(alexConfirmed(), 'Understand the options before deciding');
+    s = typed(s, 'Actually, keep $8,000 for emergencies.');
+    expect(s.memory.allocations.find((a) => a.purpose === 'emergency')?.amount).toBe(8_000);
+    expect(allocationSnapshot(s).unassigned).toBe(17_000);
+    s = click(s, 'Yes, that’s right');
+    expect(buildSummary(s).allocations.unassigned).toBe(17_000);
+    expect(buildSummary(s).note).toMatch(/\$17,000 isn’t assigned/);
+    s = run(s, { type: 'startScenario' });
+    expect(getPrompt(s).scenarioForm?.initial.start).toBe(17_000);
+    s = run(s, { type: 'runScenario', input: { start: 17_000, monthly: 400, months: 60, target: null } });
+    expect(lastSunny(s)).toMatch(/total of \$41,000 before any interest or returns/);
+    expect(buildSummary(s).scenario?.result.total).toBe(41_000);
   });
 });
 
-describe('default goal journey', () => {
-  it('handles the emergency reserve: $24,000 savings, keep $10,000 aside → $14,000', () => {
-    let s = alexToHomeSavings();
-    expect(lastSunny(s)).toMatch(/\$24,000 in savings/);
-    expect(s.facts.reservedSeparately).toBeNull();
-    s = click(s, 'Keep $10,000 aside for emergencies');
-    expect(s.facts.homeSavings).toBe(14000);
-    expect(s.facts.reservedSeparately).toBe(10000);
-    expect(allText(s)).toContain(
-      'Thanks for clarifying. I’ll keep that $10,000 separate and use $14,000 as your starting amount for this goal.',
-    );
-    expect(s.step).toBe('monthly');
+describe('later visits', () => {
+  const withNextStep = (label: string) => {
+    let s = click(alexConfirmed(), 'I want to build wealth, but I don’t know how investing works.');
+    s = click(s, 'More than 5 years away');
+    return click(s, label);
+  };
+
+  it('check-in reflects the actual saved next step, and takes priority over the nudge', () => {
+    let s = run(withNextStep('Learn about investment risk first'), { type: 'setView', view: 'dashboard' });
+    expect(pendingCheckin(s)).toBeNull();
+    s = run(s, { type: 'simulateLaterVisit', days: 30 });
+    expect(dashboardCard(s)).toMatchObject({ kind: 'checkin', text: 'Last time, you wanted to understand investment risk before deciding what to do. Would you like to pick that up?' });
+    s = run(s, { type: 'checkin', action: 'continue' });
+    expect(s.view).toBe('chat');
+    expect(allText(s)).toMatch(/Welcome back, Alex/);
+    expect(allText(s)).toMatch(/you can lose money/);
+    expect(pendingCheckin(s)).toBeNull();
   });
 
-  it('produces the default scenario numbers and summary', () => {
-    let s = click(alexToHomeSavings(), 'Keep $10,000 aside for emergencies');
-    s = run(s, { type: 'setMonthly', amount: 700 });
-    expect(s.step).toBe('explore');
-    expect(allText(s)).toContain('$10,800 short');
-    expect(allText(s)).toContain('$1,000 a month');
-    const summary = buildSummary(s);
-    expect(summary.result?.projectedTotal).toBe(39200);
-    expect(summary.reservedSeparately).toBe(10000);
+  it('a different next step gives a different check-in', () => {
+    const s = run(withNextStep('Compare these options'), { type: 'simulateLaterVisit', days: 30 });
+    expect(pendingCheckin(s)?.text).toMatch(/compare the options we looked at/);
   });
 
-  it('zero monthly amount responds respectfully without a product path', () => {
-    let s = click(alexToHomeSavings(), 'Keep $10,000 aside for emergencies');
-    s = click(s, 'I can’t set anything aside right now');
-    expect(allText(s)).toMatch(/completely okay/);
-    const labels = getPrompt(s).replies.map((r) => r.label);
-    expect(labels).toContain('Save a summary of this conversation');
-    expect(labels).not.toContain('Which investment should I buy?');
+  it('“Stop these check-ins”, “Remind me later” and “Not right now” are respected', () => {
+    let s = run(withNextStep('Learn about investment risk first'), { type: 'simulateLaterVisit', days: 30 }, { type: 'checkin', action: 'stop' });
+    s = run(s, { type: 'simulateLaterVisit', days: 30 });
+    expect(pendingCheckin(s)).toBeNull();
+    let r = run(withNextStep('Learn about investment risk first'), { type: 'simulateLaterVisit', days: 30 }, { type: 'checkin', action: 'remind_later' });
+    expect(pendingCheckin(r)).toBeNull();
+    r = run(r, { type: 'simulateLaterVisit', days: 30 });
+    expect(pendingCheckin(r)).not.toBeNull();
+    expect(pendingCheckin(run(withNextStep('Not right now'), { type: 'simulateLaterVisit', days: 30 }))).toBeNull();
   });
 
-  it('target already reached shows no negative gap', () => {
-    let s = alexToHomeSavings();
-    s = run(s, { type: 'askHomeSavingsAmount' }, { type: 'setHomeSavings', amount: 20000 });
-    s = run(s, { type: 'updateFacts', patch: { target: 15000 } }, { type: 'setMonthly', amount: 700 });
-    expect(allText(s)).toMatch(/already meet the \$15,000 target/);
-    expect(allText(s)).not.toMatch(/-\$|NaN|Infinity/);
-  });
-
-  it('keeps investment requests within educational scope', () => {
-    const s = typed(opened(), 'Which investment should I buy?');
-    expect(lastSunny(s)).toMatch(/can’t determine the right investment for you/);
-    expect(getPrompt(s).replies.slice(0, 2).map((r) => r.label)).toEqual(['Explain the options', 'Prepare questions for human support']);
-  });
-
-  it('clarifies unclear messages instead of refusing', () => {
-    const s = typed(opened(), 'What is the weather tomorrow?');
-    expect(lastSunny(s)).toMatch(/I’m not sure I followed/);
-    expect(getPrompt(s).replies.length).toBeGreaterThan(2);
+  it('“Change my goal” asks the goal question again', () => {
+    const s = run(withNextStep('Learn about investment risk first'), { type: 'simulateLaterVisit', days: 30 }, { type: 'checkin', action: 'change_goal' });
+    expect(s.stage).toBe('goal');
+    expect(lastSunny(s)).toMatch(/What would you like this money to help you do now/);
   });
 });
 
-describe('corrections and validation', () => {
-  it('“Keep $10,000 for emergencies” typed later is an allocation correction, not a topic', () => {
-    let s = click(alexToHomeSavings(), 'All of it');
-    s = run(s, { type: 'setMonthly', amount: 700 });
-    expect(s.facts.homeSavings).toBe(24000);
-    s = typed(s, 'Actually, keep $10,000 for emergencies');
-    expect(s.facts.homeSavings).toBe(14000);
-    expect(s.facts.reservedSeparately).toBe(10000);
-    expect(s.activeTopic).not.toBe('emergency');
-    const sum = buildSummary(s);
-    expect(sum.result?.projectedTotal).toBe(39200);
-    expect(sum.note).toContain('$14,000');
-    expect(sum.note).not.toContain('$24,000');
-  });
-
-  it('an ambiguous emergency correction asks how much', () => {
-    let s = click(alexToHomeSavings(), 'All of it');
-    s = typed(s, 'Actually, I need some of that money for emergencies.');
-    expect(s.step).toBe('reserveAmount');
-    expect(s.facts.homeSavings).toBe(24000);
-    s = typed(s, '8000');
-    expect(s.facts.reservedSeparately).toBe(8000);
-    expect(s.facts.homeSavings).toBe(16000);
-  });
-
-  it('negative amounts are never silently made positive', () => {
-    let s = click(alexToHomeSavings(), 'Keep $10,000 aside for emergencies');
-    s = run(s, { type: 'setMonthly', amount: 700 });
-    s = typed(s, 'change monthly to -500');
-    expect(s.facts.monthly).toBe(700);
-    expect(lastSunny(s)).toMatch(/negative amount/);
-    s = run(s, { type: 'setMonthly', amount: -50 });
-    expect(s.facts.monthly).toBe(700);
-  });
-
-  it('home savings above the snapshot balance ask about money held elsewhere', () => {
-    let s = alexToHomeSavings();
-    s = run(s, { type: 'askHomeSavingsAmount' }, { type: 'setHomeSavings', amount: 30000 });
-    expect(s.step).toBe('confirmElsewhere');
-    expect(s.facts.homeSavings).toBeNull();
-    expect(lastSunny(s)).toMatch(/more than the \$24,000/);
-    const declined = click(s, 'No, let me re-enter it');
-    expect(declined.facts.homeSavings).toBeNull();
-    expect(declined.step).toBe('homeSavingsAmount');
-    s = click(s, 'Yes, some is held elsewhere');
-    expect(s.facts.homeSavings).toBe(30000);
-    expect(s.facts.homeSavingsHeldElsewhere).toBe(true);
-    expect(s.step).toBe('monthly');
-  });
-
-  it('updates recalculate and the summary uses only current values', () => {
-    let s = click(alexToHomeSavings(), 'Keep $10,000 aside for emergencies');
-    s = run(s, { type: 'setMonthly', amount: 700 });
-    s = typed(s, 'change monthly to 1000');
-    s = typed(s, 'change my timeline to 4 years');
-    s = typed(s, 'starting savings 20000');
-    expect(s.facts.reservedSeparately).toBe(4000);
-    const sum = buildSummary(s);
-    expect(sum.result?.projectedTotal).toBe(68000);
-    expect(calculateScenario(scenarioInput(s.facts)!).remainingGap).toBe(0);
+describe('permission before model access', () => {
+  it('sends account details to the model only after permission', () => {
+    let s = run(fresh(), { type: 'open', origin: 'nudge' });
+    expect(buildChatRequest(s).account).toBeNull();
+    const general = click(s, 'Keep it general');
+    expect(buildChatRequest(general).account).toBeNull();
+    s = click(s, 'Yes, use my account details');
+    const req = buildChatRequest(s);
+    expect(req.account).toMatchObject({ chequingBalance: 28_000, savingsBalance: 12_000, monthlyIncome: 5_200, monthlyExpenses: 3_600 });
+    expect(req.account?.signal).toMatchObject({ threshold: 25_000, observationDays: 90 });
   });
 });
 
-describe('education detours', () => {
-  it('preserve progress and allow returning to the goal flow', () => {
-    const before = alexToHomeSavings();
-    let s = typed(before, 'What is an FHSA?');
-    expect(s.step).toBe('homeSavings');
-    expect(s.facts).toEqual(before.facts);
-    s = typed(s, 'how is a tfsa different?');
-    expect(s.topicsExplored).toEqual(['fhsa', 'tfsa']);
-    s = click(s, 'Continue where we left off');
-    expect(lastSunny(s)).toMatch(/How much of that is available/);
-    s = click(s, 'Keep $10,000 aside for emergencies');
-    expect(s.facts.homeSavings).toBe(14000);
-  });
-});
+describe('AI effects are re-validated', () => {
+  const aiState = () => {
+    let s = createInitialState(buildPreset('alex'), { mode: 'ai' });
+    s = run(s, { type: 'open', origin: 'self' }, { type: 'permission', allow: true }, { type: 'customerMessage', text: 'hi' });
+    return s;
+  };
+  const respond = (s: ConversationState, r: Partial<ChatResponse>) =>
+    run(s, { type: 'aiTurn', response: { reply: 'ok', sourceIds: [], suggestions: [], effects: [], ...r } });
 
-describe('AI-mode effects', () => {
-  const aiState = () => run(createInitialState(DEFAULT_PROFILE, 'ai'), { type: 'open' }, { type: 'customerMessage', text: 'hi' });
-  const respond = (s: ConversationState, response: Partial<ChatResponse>) =>
-    run(s, { type: 'aiTurn', response: { reply: 'ok', sourceIds: [], suggestions: [], effects: [], ...response } });
-
-  it('drops unknown source ids and keeps valid ones', () => {
-    const s = respond(aiState(), { sourceIds: ['gov-tfsa', 'made-up', 'https://evil.example'] });
-    expect(s.messages.at(-1)!.sources).toEqual(['gov-tfsa']);
-    expect(s.sourcesCited).toEqual(['gov-tfsa']);
+  it('rejects allocations above the balance and unknown offering/source ids', () => {
+    let s = respond(aiState(), { effects: [{ type: 'allocationsUpdated', allocations: [{ account: 'chequing', purpose: 'emergency', amount: 40_000 }] }] });
+    expect(s.memory.allocations).toEqual([]);
+    expect(allText(s)).toMatch(/more than the \$28,000 in your chequing account, so I haven’t saved it/);
+    s = respond(s, { sourceIds: ['tng-investment-funds', 'made-up'], effects: [{ type: 'offeringsShown', ids: ['investment-funds', 'crypto-fund'], reason: 'You asked' }] });
+    expect(s.messages.find((m) => m.ai && m.text === 'ok' && m.sources)?.sources).toEqual(['tng-investment-funds']);
+    expect(s.messages.at(-1)?.card).toMatchObject({ kind: 'offerings', ids: ['investment-funds'] });
   });
 
-  it('re-validates fact updates: negatives and over-balance values are not applied', () => {
-    let s = run(aiState(), { type: 'snapshotDecision', allow: true });
-    s = respond(s, { effects: [{ type: 'factsUpdated', patch: { monthly: -100, homeSavings: 99999, target: 50000 } }] });
-    expect(s.facts.monthly).toBeNull();
-    expect(s.facts.homeSavings).toBeNull();
-    expect(s.facts.target).toBe(50000);
-  });
-
-  it('applies a reserve correction and shows a validated scenario card', () => {
-    let s = run(aiState(), { type: 'snapshotDecision', allow: true });
-    s = respond(s, { effects: [{ type: 'factsUpdated', patch: { reservedSeparately: 10000, homeSavings: 14000 } }] });
-    expect(s.facts.homeSavings).toBe(14000);
-    s = respond(s, {
-      effects: [{ type: 'scenario', input: { startingSavings: 14000, target: 50000, monthly: 700, months: 36 }, hypothetical: true }],
+  it('applies valid goal, horizon, next step and allocations', () => {
+    const s = respond(aiState(), {
+      effects: [
+        { type: 'allocationsUpdated', allocations: [{ account: 'chequing', purpose: 'upcoming_expenses', amount: 3_000 }, { account: 'chequing', purpose: 'emergency', amount: 10_000 }] },
+        { type: 'goalSet', goal: { type: 'build_wealth', detail: 'learn investing' } },
+        { type: 'horizonSet', horizon: 'over_5_years' },
+        { type: 'nextStepSet', step: 'learn_risk' },
+      ],
     });
-    expect(s.messages.at(-1)!.card).toMatchObject({ kind: 'scenario', hypothetical: true });
-    const bad = respond(s, { effects: [{ type: 'scenario', input: { startingSavings: -1, target: 0, monthly: NaN, months: 0 }, hypothetical: false }] });
-    expect(bad.messages.at(-1)!.card).toBeUndefined();
-  });
-
-  it('a permission request shows Allow / Not now and declining keeps data private', () => {
-    let s = respond(aiState(), { effects: [{ type: 'requestSnapshotPermission', reason: 'To compare with your balances' }] });
-    expect(getPrompt(s).replies.map((r) => r.label)).toEqual(['Yes, use my account snapshot', 'Not now']);
-    s = run(s, { type: 'snapshotDecision', allow: false });
-    expect(buildChatRequest(s).snapshotPermission).toBe('declined');
-    expect(buildChatRequest(s).snapshot).toBeNull();
-  });
-
-  it('errors are local (not sent to the model) and can be cleared for retry', () => {
-    let s = run(aiState(), { type: 'aiError', code: 'timeout', message: 'Too slow' });
-    expect(s.messages.at(-1)!.card?.kind).toBe('error');
-    expect(buildChatRequest(s).messages.at(-1)).toEqual({ role: 'customer', text: 'hi' });
-    s = run(s, { type: 'clearAiError' });
-    expect(s.messages.at(-1)!.role).toBe('customer');
+    expect(allocationSnapshot(s).unassigned).toBe(15_000);
+    expect(s.memory).toMatchObject({ goal: { type: 'build_wealth' }, horizon: 'over_5_years', nextStep: 'learn_risk' });
   });
 });
 
-describe('scenario reset', () => {
-  it('restart clears facts and history', () => {
-    let s = click(alexToHomeSavings(), 'Keep $10,000 aside for emergencies');
-    s = typed(s, 'restart');
-    s = click(s, 'Yes, start over');
-    expect(s.facts.homeSavings).toBeNull();
-    expect(s.messages).toHaveLength(2);
+describe('reset and isolation', () => {
+  it('reset clears memory, conversation and simulated time', () => {
+    let s = run(alexConfirmed(), { type: 'simulateLaterVisit', days: 30 });
+    s = run(s, { type: 'confirmRestart' });
+    expect(s.memory.allocations).toEqual([]);
+    expect(s.messages).toEqual([]);
+    expect(s.todayIndex).toBe(s.profile.spec.todayIndex);
   });
 
-  it('switching presets resets state so nothing leaks between customers', () => {
-    let s = click(alexToHomeSavings(), 'Keep $10,000 aside for emergencies');
-    s = run(s, { type: 'openTopic', topic: 'gic' });
-    const sam = PRESETS.find((p) => p.id === 'sam')!.profile;
-    s = run(s, { type: 'loadProfile', profile: sam }, { type: 'open' });
-    expect(s.messages[0].text).toMatch(/^Hi Sam/);
-    expect(s.facts.homeSavings).toBeNull();
-    expect(s.topicsExplored).toEqual([]);
-    expect(s.sourcesCited).toEqual([]);
+  it('loading another scenario starts clean', () => {
+    const s = run(alexConfirmed(), { type: 'loadPreset', profile: buildPreset('sam') });
+    expect(s.profile.firstName).toBe('Sam');
+    expect(s.memory.allocations).toEqual([]);
+    expect(s.memory.prefs.earmarked).toBe(false);
+    expect(dashboardCard(s)).toBeNull();
   });
 });
 
-describe('AI reserve correction (client re-validation)', () => {
-  it('derives home-goal savings from the snapshot when only a reserve arrives', () => {
-    let s = run(createInitialState(DEFAULT_PROFILE, 'ai'), { type: 'open' }, { type: 'customerMessage', text: 'keep $10,000 for emergencies' });
-    s = run(s, { type: 'snapshotDecision', allow: true });
-    s = run(s, { type: 'aiTurn', response: { reply: 'ok', sourceIds: [], suggestions: [], effects: [{ type: 'factsUpdated', patch: { homeSavings: 24000 } }] } });
-    s = run(s, { type: 'aiTurn', response: { reply: 'ok', sourceIds: [], suggestions: [], effects: [{ type: 'factsUpdated', patch: { reservedSeparately: 10000 } }] } });
-    expect(s.facts.reservedSeparately).toBe(10000);
-    expect(s.facts.homeSavings).toBe(14000);
+describe('summary topics', () => {
+  it('lists only topics actually discussed, not supporting sources', () => {
+    let s = click(alexConfirmed(), 'I want to build wealth, but I don’t know how investing works.');
+    s = click(s, 'More than 5 years away');
+    const topics = buildSummary(s).topics;
+    expect(topics).toEqual(['Saving vs investing']);
   });
 });
