@@ -59,8 +59,12 @@ export function HandoffPreview({ state, dispatch }: Props) {
               </div>
             )}
             <div className="fact">
-              <dt>Offerings looked at</dt>
-              <dd>{s.offerings.length ? s.offerings.join(', ') : 'None yet'}</dd>
+              <dt>Offerings the customer opened</dt>
+              <dd>{s.offeringsExplored.length ? s.offeringsExplored.join(', ') : 'None opened'}</dd>
+            </div>
+            <div className="fact">
+              <dt>Offerings Sunny showed</dt>
+              <dd>{s.offeringsShown.length ? s.offeringsShown.join(', ') : 'None yet'}</dd>
             </div>
           </dl>
         </section>

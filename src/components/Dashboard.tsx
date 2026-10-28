@@ -2,7 +2,7 @@ import { useId } from 'react';
 import { dashboardCard, currentBalances } from '../conversation/engine';
 import { GOAL_LABEL, NEXT_STEP_LABEL } from '../conversation/script';
 import type { CheckinAction, ConversationState, Origin, SunnyEvent } from '../conversation/types';
-import { explainSignal } from '../domain/signal';
+import { explainSignal, hasMissingDays, type SignalResult } from '../domain/signal';
 import { money } from '../lib/format';
 import { BalanceTrend, formatDate } from './Cards';
 import { SunnyOrb } from './SunnyOrb';
@@ -90,6 +90,15 @@ export function Dashboard({ state, onOpen, onCheckin, dispatch }: Props) {
   );
 }
 
+/** Headline consistent with "Why am I seeing this?": honest when some days have no data. */
+export function nudgeHeadline(signal: SignalResult, days: number): string {
+  const period = days === 90 ? 'the past three months' : `the past ${days} days`;
+  const t = money(signal.evidence.threshold);
+  return hasMissingDays(signal)
+    ? `Your chequing balance was above ${t} on every day with data over ${period} (${signal.evidence.daysWithData} of ${days} days).`
+    : `Your chequing balance has stayed above ${t} over ${period}.`;
+}
+
 function InsightCard({
   card,
   state,
@@ -129,19 +138,28 @@ function InsightCard({
             {card.text}
           </h2>
           <div className="insight-actions">
-            <button type="button" className="btn btn-primary" onClick={() => onCheckin('continue')}>
+            <button type="button" className="btn btn-primary" onClick={() => onCheckin('done')}>
+              I did this
+            </button>
+            <button type="button" className="btn btn-secondary" onClick={() => onCheckin('continue')}>
               Continue
             </button>
-            <button type="button" className="btn btn-secondary" onClick={() => onCheckin('change_goal')}>
-              Change my goal
+            <button type="button" className="btn btn-secondary" onClick={() => onCheckin('another_step')}>
+              Choose another next step
             </button>
-            <button type="button" className="btn btn-ghost" onClick={() => onCheckin('remind_later')}>
+          </div>
+          <div className="insight-secondary">
+            <button type="button" className="link-button" onClick={() => onCheckin('remind_later')}>
               Remind me later
             </button>
-            <button type="button" className="btn btn-ghost" onClick={() => onCheckin('stop')}>
+            <button type="button" className="link-button" onClick={() => onCheckin('change_goal')}>
+              Change my goal
+            </button>
+            <button type="button" className="link-button" onClick={() => onCheckin('stop')}>
               Stop these check-ins
             </button>
           </div>
+          <p className="field-hint">Sunny won’t assume you did it, and nothing in your accounts changes.</p>
         </div>
       </section>
     );
@@ -155,7 +173,7 @@ function InsightCard({
       <div className="insight-body">
         <p className="eyebrow">Sunny · Insight</p>
         <h2 id="insight-title" className="insight-title">
-          Your chequing balance has stayed above {money(signal.evidence.threshold)} over the past {state.signalConfig.observationDays === 90 ? 'three months' : `${state.signalConfig.observationDays} days`}. Want to explore whether some of it could support a financial goal?
+          {nudgeHeadline(signal, state.signalConfig.observationDays)} Want to explore whether some of it could support a financial goal?
         </h2>
         <div className="insight-actions">
           <button type="button" className="btn btn-primary" onClick={() => onOpen('nudge')}>

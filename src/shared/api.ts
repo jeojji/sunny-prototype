@@ -70,7 +70,10 @@ export interface ConversationContext {
   goal: { type: GoalKey; detail: string | null } | null;
   horizon: HorizonKey | null;
   nextStep: NextStepKey | null;
-  offeringsViewed: string[];
+  /** Offerings Sunny displayed. */
+  offeringsShown: string[];
+  /** Offerings the customer actively opened. */
+  offeringsExplored: string[];
   /** Earlier visit's next step, for check-ins. */
   previousNextStep: NextStepKey | null;
 }
@@ -140,6 +143,7 @@ export const EMPTY_CONTEXT: ConversationContext = {
   goal: null,
   horizon: null,
   nextStep: null,
-  offeringsViewed: [],
+  offeringsShown: [],
+  offeringsExplored: [],
   previousNextStep: null,
 };

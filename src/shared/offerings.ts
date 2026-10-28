@@ -111,3 +111,34 @@ export function offeringsFor(goal: GoalType | null): Offering[] {
 export function offeringUrl(o: Offering): string | undefined {
   return getEntry(o.sources[0])?.url;
 }
+
+export type HorizonType = 'under_1_year' | '1_to_5_years' | 'over_5_years' | 'not_sure';
+export type Emphasis = 'access' | 'balanced' | 'growth' | 'flexible';
+
+export interface OfferingPlan {
+  ids: string[];
+  emphasis: Emphasis;
+}
+
+const SHORT_TERM = ['savings-account', 'gic', 'tfsa'];
+
+/**
+ * Deterministic rule for the *initial* product exploration, used by both the
+ * scripted engine and the server tool. It decides what's relevant to learn
+ * about first given the customer's stated goal and timeline. It is not a
+ * suitability decision or an allocation, and the full catalogue stays one
+ * click away ("Browse all Tangerine offerings").
+ *  - Within a year: access and stability first (savings, GIC terms and restrictions, TFSA savings).
+ *  - 1–5 years: access and stability, plus investment funds only if the goal is building wealth or understanding options.
+ *  - More than 5 years: the goal's full set, which can include investment education and funds.
+ *  - Not sure / not stated: flexible options while the timeline is clarified.
+ */
+export function offeringPlan(goal: GoalType | null, horizon: HorizonType | null): OfferingPlan {
+  if (horizon === 'under_1_year') return { ids: SHORT_TERM, emphasis: 'access' };
+  if (horizon === '1_to_5_years') {
+    const growth = goal === 'build_wealth' || goal === 'understand_options';
+    return { ids: growth ? [...SHORT_TERM, 'investment-funds'] : SHORT_TERM, emphasis: 'balanced' };
+  }
+  if (horizon === 'over_5_years') return { ids: offeringsFor(goal).map((o) => o.id), emphasis: goal === 'build_wealth' ? 'growth' : 'balanced' };
+  return { ids: SHORT_TERM, emphasis: 'flexible' };
+}

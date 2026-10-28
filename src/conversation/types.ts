@@ -81,10 +81,17 @@ export interface Memory {
   /** What prompted the first conversation. */
   prompt: Origin | null;
   topicsExplored: TopicId[];
-  offeringsViewed: string[];
+  /** Offerings Sunny displayed in a card. */
+  offeringsShown: string[];
+  /** Offerings the customer actively opened (expanded a card or followed its official link). */
+  offeringsExplored: string[];
   sourcesCited: string[];
   supportQuestions: string[];
   scenario: ScenarioFacts | null;
+  /** The customer said they completed the current next step (reset when a new step is chosen). */
+  nextStepDone: boolean;
+  /** History of next steps the customer said they completed. */
+  completedSteps: NextStepId[];
   prefs: Prefs;
   /** Simulated day of the most recent conversation. */
   lastConversationDay: number | null;
@@ -113,6 +120,11 @@ export interface Message {
   id: string;
   role: 'sunny' | 'customer';
   text: string;
+  /**
+   * Contains account-derived details (balances, signal evidence). Never sent to
+   * the model unless account-data permission is currently granted.
+   */
+  accountDetail?: boolean;
   card?: MessageCard;
   /** Validated knowledge-base ids supporting this message. */
   sources?: string[];
@@ -150,7 +162,7 @@ export interface ConversationState {
 
 export type PurposeKind = 'allocations' | 'earmarked' | 'no_plan' | 'debt' | 'other';
 
-export type CheckinAction = 'continue' | 'change_goal' | 'remind_later' | 'stop';
+export type CheckinAction = 'continue' | 'done' | 'another_step' | 'change_goal' | 'remind_later' | 'stop';
 
 /** Everything that can happen. Free text is mapped to these by an interpreter (scripted) or the model's tools (AI). */
 export type SunnyEvent =
@@ -166,6 +178,11 @@ export type SunnyEvent =
   | { type: 'showOfferings' }
   | { type: 'chooseNextStep'; step: NextStepId }
   | { type: 'pickNextStep' }
+  | { type: 'browseOfferings' }
+  | { type: 'exploreOffering'; id: string }
+  | { type: 'exploreGoal' }
+  | { type: 'resumeGoal' }
+  | { type: 'revokePermission' }
   | { type: 'openTopic'; topic: TopicId }
   | { type: 'simpler' }
   | { type: 'askInvestment' }

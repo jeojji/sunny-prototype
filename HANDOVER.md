@@ -36,7 +36,7 @@ The rule checks, in order:
 4. **Earmark.** If the customer said the money is already set aside, the status is `suppressed_earmarked` (permanent for this scenario).
 5. **Snooze.** If the customer chose “Not now”, the status is `suppressed_dismissed` for 30 simulated days.
 
-Otherwise the status is `qualifies`. The dashboard also won’t repeat the opportunity nudge once the customer has engaged with it (allocations, goal or next step from a nudge conversation), because continuity moves to check-ins (`engagedWithNudge`).
+Otherwise the status is `qualifies`. If some days in the window have no data (allowed up to the coverage rule), the nudge and *Why am I seeing this?* say “on all observed days” and state how many days had data (`signalSentence`, `explainSignal`, `nudgeHeadline`). The dashboard also won’t repeat the opportunity nudge once the customer has engaged with it (allocations, goal or next step from a nudge conversation), because continuity moves to check-ins (`engagedWithNudge`).
 
 **The signal only identifies a reason to ask a question.** It never sets an amount, suitability or a product. Evidence includes the window dates, days with data, coverage, min/max/average balance, days below the threshold and the current balance.
 
@@ -51,13 +51,29 @@ Synthetic histories (`domain/history.ts`): pay on the 1st and 15th, rent on the 
 ## State (`src/conversation/types.ts`)
 
 - `profile`: the synthetic relationship. `todayIndex`: the simulated day. `signalConfig`. `mode` (`ai` | `scripted`). `view`. `stage` (scripted flow). `origin` (`nudge` | `self` | `checkin`).
-- `memory` (persisted per scenario in localStorage; synthetic only):
+- **Permission** is per session. It resets on a simulated later visit and whenever saved memory is loaded (`normalizeMemory`), and can be revoked in the chat (`revokePermission`). Messages built from account details are flagged `accountDetail`; `buildChatRequest` omits them unless permission is currently granted, so retained history can’t bypass the boundary.
+- `memory` (persisted per scenario in localStorage; synthetic only; old saved memory is migrated by `normalizeMemory`):
   - `permission`, `allocations`, `goal` (type + the customer’s words), `horizon`, `nextStep`, `prompt` (what started it)
-  - `topicsExplored`, `offeringsViewed`, `sourcesCited`, `supportQuestions`, `scenario`
+  - `topicsExplored`, `offeringsShown` (cards Sunny displayed), `offeringsExplored` (cards the customer expanded or whose official link they followed), `sourcesCited`, `supportQuestions`, `scenario`
+  - `nextStepDone`, `completedSteps` (from the check-in’s **I did this**; a completed step isn’t prompted again)
   - `prefs` (`earmarked`, `dismissedUntil`, `checkinsStopped`, `remindAfter`), `lastConversationDay`, `visit`
 - Messages are never persisted; a later visit starts a fresh conversation using memory.
 - **Check-in** (`pendingCheckin`) appears only when there’s a saved next step other than “Not right now”, check-ins aren’t stopped or snoozed, and it’s a later simulated day than the last conversation. Its text comes from the saved next step and goal.
 - Reset: “Reset this scenario” removes that scenario’s memory and time; “Reset all demo data” clears the storage key `sunny-demo-v2`.
+
+## Navigation (`src/conversation/navigation.ts`)
+
+After an answer, `nextTopics` builds the follow-ups:
+- It starts with topics related to the one just answered, then adds context: the earmark (if no goal yet), the timeline, the goal, then general topics.
+- It **never** offers the topic just answered, puts unexplored topics first, and only fills remaining space with revisits.
+- `restingReplies` shows up to 3 topics plus one action (*Back to my goal*, *Explore a different goal* or *Help me think through a goal*, and *See my summary* once a next step exists).
+- During a pending question, a detour shows *Continue where we left off* plus two fresh topics.
+- Next steps appear four at a time (based on the timeline) with *More next steps*.
+- The always-visible **Explore other topics** menu (`TOPIC_MENU`) and **Done for now** sit under the chat in both modes.
+
+AI mode: `cleanSuggestions` drops empty, overlong, duplicate and near-duplicate suggestions, and ones repeating the latest customer message. `fallbackQuestions` tops up with the same contextual topics when fewer than two remain.
+
+Earmarks: education and *Explore a different goal* never change `prefs.earmarked`, and never create allocations from committed money.
 
 ## Conversation logic
 
@@ -68,7 +84,7 @@ Synthetic histories (`domain/history.ts`): pay on the 1st and 15th, rent on the 
 |---|---|
 | `record_allocation` | Quote from the latest message; amount in the quote; not negative; ≤ balance (when shared) |
 | `record_goal` / `record_time_horizon` / `record_next_step` | Quote from the latest message **and** words expressing that choice (a live test found the model recording a next step the customer hadn’t chosen) |
-| `show_offerings` | Only real offering ids; only after a goal or when asked about options |
+| `show_offerings` | Only real offering ids; only after a goal or when asked about options. The same `offeringPlan(goal, horizon)` rule as scripted mode limits the initial set; other ids appear only if the customer names those products or asks to browse all |
 | `calculate_scenario` | Values from customer messages or computed allocations; contributions only, no returns |
 | `read_account_snapshot` / `request_account_permission` | Only with permission / only for personal-number questions |
 | `prepare_summary` / `prepare_support_preview` | Only when the customer asks |

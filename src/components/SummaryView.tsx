@@ -64,14 +64,20 @@ export function SummaryView({ state, dispatch, onRestart }: Props) {
             </div>
             <div className="fact">
               <dt>Next step you chose</dt>
-              <dd>{s.nextStep ?? notYet}</dd>
+              <dd>{s.nextStep ? `${s.nextStep}${s.nextStepDone ? ' (you marked it done)' : ''}` : notYet}</dd>
             </div>
+            {s.completedSteps.length > 0 && (
+              <div className="fact">
+                <dt>Steps you’ve completed</dt>
+                <dd>{s.completedSteps.join('; ')}</dd>
+              </div>
+            )}
           </dl>
           {s.scenario && <ScenarioCard input={s.scenario.input} />}
         </section>
 
         <section className="panel-card" aria-labelledby="sum-explored">
-          <h2 id="sum-explored">Topics and offerings explored</h2>
+          <h2 id="sum-explored">Topics and offerings</h2>
           <h3>Topics</h3>
           {s.topics.length ? (
             <ul className="plain-list">
@@ -82,17 +88,27 @@ export function SummaryView({ state, dispatch, onRestart }: Props) {
           ) : (
             <p className="muted">None yet.</p>
           )}
-          <h3>Tangerine offerings viewed</h3>
-          {s.offerings.length ? (
+          <h3>Tangerine offerings you opened</h3>
+          {s.offeringsExplored.length ? (
             <ul className="plain-list">
-              {s.offerings.map((t) => (
+              {s.offeringsExplored.map((t) => (
+                <li key={t}>{t}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">None opened yet.</p>
+          )}
+          <h3>Offerings Sunny showed</h3>
+          {s.offeringsShown.length ? (
+            <ul className="plain-list">
+              {s.offeringsShown.map((t) => (
                 <li key={t}>{t}</li>
               ))}
             </ul>
           ) : (
             <p className="muted">None yet.</p>
           )}
-          <p className="field-hint">Viewed to learn about, not recommended. Other institutions offer similar products.</p>
+          <p className="field-hint">Shown to learn about, not recommended. Other institutions offer similar products.</p>
         </section>
 
         <section className="panel-card page-wide" aria-labelledby="sum-unknown">

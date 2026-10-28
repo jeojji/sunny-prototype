@@ -155,7 +155,7 @@ export function AllocationCard({ snapshot }: { snapshot: AllocationSnapshot }) {
   );
 }
 
-export function OfferingsCard({ ids, reason }: { ids: string[]; reason: string }) {
+export function OfferingsCard({ ids, reason, onExplore }: { ids: string[]; reason: string; onExplore?: (id: string) => void }) {
   const list = ids.map(getOffering).filter((o): o is NonNullable<typeof o> => Boolean(o));
   if (!list.length) return null;
   return (
@@ -167,7 +167,7 @@ export function OfferingsCard({ ids, reason }: { ids: string[]; reason: string }
           const url = offeringUrl(o);
           const reviewed = getEntry(o.sources[0])?.reviewed;
           return (
-            <details key={o.id} className="offering">
+            <details key={o.id} className="offering" onToggle={(e) => (e.currentTarget as HTMLDetailsElement).open && onExplore?.(o.id)}>
               <summary>
                 <strong>{o.name}</strong>
                 <span>{o.summary}</span>
@@ -201,7 +201,7 @@ export function OfferingsCard({ ids, reason }: { ids: string[]; reason: string }
                 )}
                 <p className="offering-links">
                   {url && (
-                    <a href={url} target="_blank" rel="noreferrer">
+                    <a href={url} target="_blank" rel="noreferrer" onClick={() => onExplore?.(o.id)}>
                       Official page
                     </a>
                   )}

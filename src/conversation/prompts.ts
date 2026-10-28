@@ -5,7 +5,8 @@
 import { TOPICS, type TopicId } from '../data/education';
 import { PURPOSE_LABEL, type Purpose } from '../domain/allocations';
 import type { GoalType } from '../shared/offerings';
-import { allocationSnapshot, suggestedTopics } from './engine';
+import { allocationSnapshot } from './engine';
+import { fallbackQuestions, latestCustomerText, nextTopics } from './navigation';
 import { interpretText } from './intents';
 import { GOAL_LABEL, HORIZON_LABEL, NEXT_STEP_LABEL } from './script';
 import type { ConversationState, CustomerTurn, Horizon, NextStepId, ScenarioFacts, Stage } from './types';
@@ -42,7 +43,35 @@ const GOAL_ORDER: GoalType[] = ['build_wealth', 'accessible_interest', 'first_ho
 const HORIZON_ORDER: Horizon[] = ['under_1_year', '1_to_5_years', 'over_5_years', 'not_sure'];
 const NEXT_ORDER: NextStepId[] = ['learn_risk', 'compare_options', 'explore_scenario', 'read_product_page', 'prepare_questions', 'save_for_later', 'not_proceeding'];
 
-const nextStepReplies = () => NEXT_ORDER.map((s, i) => reply(NEXT_STEP_LABEL[s], { type: 'chooseNextStep', step: s }, i === 0));
+/** Next-step choices: four at a time by default; all of them when the customer asks for more. */
+function nextStepReplies(state: ConversationState, all: boolean): Reply[] {
+  const m = state.memory;
+  const done = (s: NextStepId) => m.nextStepDone && m.nextStep === s;
+  const shortTerm = m.horizon === 'under_1_year';
+  const preferred: NextStepId[] = shortTerm
+    ? ['compare_options', 'read_product_page', 'save_for_later', 'prepare_questions']
+    : ['learn_risk', 'compare_options', 'explore_scenario', 'save_for_later'];
+  const order = all ? NEXT_ORDER : preferred;
+  const list = order.filter((s) => !done(s)).map((s, i) => reply(NEXT_STEP_LABEL[s], { type: 'chooseNextStep', step: s }, i === 0));
+  return all ? list : [...list, reply('More next steps', { type: 'pickNextStep' })];
+}
+
+/**
+ * Follow-ups after an answer when no question is pending: up to three topics
+ * (never the one just answered) plus one action that fits the situation.
+ */
+function restingReplies(state: ConversationState): Reply[] {
+  const m = state.memory;
+  const actions: Reply[] = [];
+  if (m.goal && (!m.horizon || !m.nextStep)) actions.push(reply('Back to my goal', { type: 'resumeGoal' }, true));
+  else if (!m.goal) actions.push(reply(m.prefs.earmarked ? 'Explore a different goal' : 'Help me think through a goal', { type: 'exploreGoal' }, !state.activeTopic));
+  if (m.nextStep) {
+    actions.push(reply('See my summary', { type: 'showSummary' }, true));
+    actions.push(reply('Choose a different next step', { type: 'pickNextStep' }));
+  }
+  const topics = nextTopics(state, Math.max(2, 4 - actions.length)).map(topicReply);
+  return [...topics, ...actions].slice(0, 5);
+}
 
 function allocationForm(state: ConversationState): AllocationFormSpec {
   const existing = (p: Purpose) => state.memory.allocations.find((a) => a.account === 'chequing' && a.purpose === p)?.amount ?? null;
@@ -66,14 +95,17 @@ function stagePrompt(state: ConversationState, stage: Stage): Prompt {
   const m = state.memory;
   switch (stage) {
     case 'start':
-      return {
-        replies: [
-          topicReply('tangerine_help'),
-          topicReply('saving_vs_investing'),
-          topicReply('account_vs_holdings'),
-          reply('Help me think through a goal', { type: 'continue' }, true),
-        ],
-      };
+      if (!state.activeTopic) {
+        return {
+          replies: [
+            topicReply('tangerine_help'),
+            topicReply('saving_vs_investing'),
+            topicReply('account_vs_holdings'),
+            reply(m.goal ? 'Back to my goal' : 'Help me think through a goal', { type: m.goal ? 'resumeGoal' : 'exploreGoal' }, true),
+          ],
+        };
+      }
+      return { replies: restingReplies(state) };
     case 'permission':
       return {
         replies: [
@@ -112,17 +144,10 @@ function stagePrompt(state: ConversationState, stage: Stage): Prompt {
       };
     case 'horizon':
       return { replies: [...HORIZON_ORDER.map((h) => reply(HORIZON_LABEL[h], { type: 'setHorizon', horizon: h })), topicReply('horizon')] };
-    case 'explore': {
-      if (!m.nextStep || state.offer === 'nextSteps') return { replies: [...nextStepReplies(), ...suggestedTopics(state, 2).map(topicReply)] };
-      return {
-        replies: [
-          ...suggestedTopics(state, 3).map(topicReply),
-          ...(m.scenario ? [] : [reply('Explore an illustrative scenario', { type: 'startScenario' })]),
-          reply('Choose a different next step', { type: 'pickNextStep' }),
-          reply('See my summary', { type: 'showSummary' }, true),
-        ],
-      };
-    }
+    case 'explore':
+      if (state.offer === 'nextSteps') return { replies: nextStepReplies(state, true) };
+      if (!m.nextStep || m.nextStepDone) return { replies: nextStepReplies(state, false) };
+      return { replies: restingReplies(state) };
     case 'scenario': {
       const snap = allocationSnapshot(state);
       return {
@@ -142,13 +167,11 @@ function stagePrompt(state: ConversationState, stage: Stage): Prompt {
       };
     }
     case 'earmarked':
-      return {
-        replies: [
-          topicReply('need_next_year'),
-          ...(m.prefs.earmarkNote?.includes('home') ? [topicReply('first_home')] : []),
-          reply('That’s all for now', { type: 'setView', view: 'dashboard' }, true),
-        ],
-      };
+      // Education here never changes the earmark; "Explore a different goal" doesn't use the committed money.
+      if (!state.activeTopic && m.prefs.earmarkNote?.includes('home')) {
+        return { replies: [topicReply('first_home'), ...restingReplies(state).slice(0, 3)] };
+      }
+      return { replies: restingReplies(state) };
     case 'confirmRestart':
       return { replies: [reply('Yes, start over', { type: 'confirmRestart' }), reply('No, keep going', { type: 'cancel' }, true)] };
   }
@@ -182,7 +205,11 @@ function aiPrompt(state: ConversationState): Prompt {
   if (!state.messages.some((msg) => msg.role === 'customer') && state.origin !== 'nudge') {
     return { replies: [aiSay('What can Tangerine help me with?'), aiSay('What’s the difference between saving and investing?'), aiSay('Is a TFSA an investment?'), aiSay('Help me think through a goal.')] };
   }
-  return { replies: state.suggestions.map((s) => aiSay(s)) };
+  // Model suggestions are cleaned when received; top up with contextual fallbacks if too few remain.
+  const latest = latestCustomerText(state);
+  const fromModel = state.suggestions;
+  const fallback = fromModel.length >= 2 ? [] : fallbackQuestions(state, fromModel, latest, 3 - fromModel.length);
+  return { replies: [...fromModel, ...fallback].slice(0, 4).map((s) => aiSay(s)) };
 }
 
 export function getPrompt(state: ConversationState): Prompt {
@@ -190,27 +217,10 @@ export function getPrompt(state: ConversationState): Prompt {
   const base = stagePrompt(state, state.stage);
   const resume = reply('Continue where we left off', { type: 'continue' }, true);
   if (state.offer === 'investment') {
-    return {
-      ...base,
-      replies: [
-        topicReply('saving_vs_investing'),
-        reply('Prepare questions for a person', { type: 'prepareSupport' }),
-        { ...resume, label: 'Back to where we were' },
-      ],
-    };
+    return { ...base, replies: [topicReply('gic_vs_fund'), reply('Prepare questions for a person', { type: 'prepareSupport' }), ...nextTopics(state, 2, ['gic_vs_fund']).map(topicReply)] };
   }
-  if (state.offer === 'menu') {
-    return {
-      ...base,
-      replies: [
-        topicReply('saving_vs_investing'),
-        topicReply('risk'),
-        topicReply('tangerine_help'),
-        ...(state.memory.goal ? [] : [reply('Help me think through a goal', { type: 'continue' })]),
-        { ...resume, label: 'Back to where we were', primary: false },
-      ],
-    };
-  }
-  if (state.offer === 'detour') return { ...base, replies: [resume, ...base.replies.map((r) => ({ ...r, primary: false }))] };
+  if (state.offer === 'menu') return { ...base, replies: restingReplies(state) };
+  // A detour from a pending question: one way back plus two fresh topics (never the one just answered).
+  if (state.offer === 'detour') return { ...base, replies: [resume, ...nextTopics(state, 2).map(topicReply)] };
   return base;
 }

@@ -24,7 +24,7 @@ import {
   type NextStepKey,
   type PurposeKey,
 } from '../src/shared/api.ts';
-import { OFFERINGS, validateOfferingIds } from '../src/shared/offerings.ts';
+import { OFFERINGS, offeringPlan, validateOfferingIds } from '../src/shared/offerings.ts';
 
 export interface ToolContext {
   req: ChatRequest;
@@ -137,6 +137,15 @@ const PERSONAL_RE =
   /\bmy (balance|balances|account|accounts|chequing|savings|money|cash|income|spending|budget|situation|numbers)\b|this money|that money|how much (do|can|could|should|would) i|what (can|could) i (save|afford)|\bscenario\b|\bcan i afford\b|use my (account|details)/;
 const SUPPORT_RE = /human|person|advis|someone|support|talk to|speak (to|with)|call (me|them|tangerine)|representative|appointment|questions? (for|to ask)/;
 const SUMMARY_RE = /summar|recap|wrap (it )?up|save (this|our|the) conversation|print/;
+const BROWSE_RE = /\b(all|every|full list|browse|everything|other options|whole catalogue)\b/;
+const OFFERING_NAMED_RE: Record<string, RegExp> = {
+  'savings-account': /savings account/,
+  tfsa: /tfsa|tax.free/,
+  rsp: /\brr?sp\b|retirement/,
+  gic: /\bgics?\b|guaranteed/,
+  'investment-funds': /fund|portfolio|etf|invest/,
+  advisors: /advis|person|talk to/,
+};
 const OFFERINGS_RE = /tangerine|option|product|account|fund|gic|tfsa|rrsp|rsp|portfolio|offer|compare|what can/;
 
 /** What the customer's own words must contain for each recorded choice (meaning check on top of the quote check). */
@@ -333,15 +342,31 @@ function run(name: string, args: Record<string, unknown>, ctx: ToolContext): Too
       if (!ctx.context.goal && !OFFERINGS_RE.test(latest)) {
         return { status: 'not_needed', instruction: 'Introduce offerings once the customer has a stated goal or asks about options.' };
       }
-      const ids = validateOfferingIds(args.offering_ids);
-      if (!ids.length) return { status: 'rejected', reason: 'no_valid_offering_ids', validIds: OFFERINGS.map((o) => o.id) };
+      const requested = validateOfferingIds(args.offering_ids);
+      if (!requested.length) return { status: 'rejected', reason: 'no_valid_offering_ids', validIds: OFFERINGS.map((o) => o.id) };
+      // Same deterministic rule as the scripted engine: goal + timeline shape the initial set.
+      // The full catalogue is available only when the customer explicitly asks to browse or names those products.
+      const plan = offeringPlan(ctx.context.goal?.type ?? null, ctx.context.horizon);
+      const named = requested.filter((id) => OFFERING_NAMED_RE[id]?.test(latest));
+      const browsing = BROWSE_RE.test(latest);
+      const ids = browsing ? requested : [...new Set([...requested.filter((id) => plan.ids.includes(id)), ...named])];
+      const finalIds = ids.length ? ids : plan.ids;
+      const dropped = requested.filter((id) => !finalIds.includes(id));
       const reason = String(args.reason ?? '').slice(0, 200);
-      ctx.context = { ...ctx.context, offeringsViewed: [...new Set([...ctx.context.offeringsViewed, ...ids])] };
-      upsertEffect(ctx, 'offeringsShown', { type: 'offeringsShown', ids, reason });
+      ctx.context = { ...ctx.context, offeringsShown: [...new Set([...ctx.context.offeringsShown, ...finalIds])] };
+      upsertEffect(ctx, 'offeringsShown', { type: 'offeringsShown', ids: finalIds, reason });
       return {
         status: 'shown',
-        offerings: ids.map((id) => OFFERINGS.find((o) => o.id === id)),
-        instruction: 'The card shows features, fees and risks. Explain why they’re relevant to explore using what the customer said, not that they’re suitable or best. Mention they aren’t the only options.',
+        offerings: finalIds.map((id) => OFFERINGS.find((o) => o.id === id)),
+        emphasis: plan.emphasis,
+        ...(dropped.length ? { notShown: dropped, note: `Not shown yet for this timeline (${ctx.context.horizon ?? 'not stated'}): ${dropped.join(', ')}. The customer can ask to browse all offerings.` } : {}),
+        instruction:
+          (plan.emphasis === 'access'
+            ? 'Short timeframe: emphasise access, stability and restrictions (e.g. GICs locked until maturity). '
+            : plan.emphasis === 'flexible'
+              ? 'Timeline unclear: keep options flexible and ask roughly when they might need the money. '
+              : '') +
+          'The card shows features, fees and risks. Explain why they’re relevant to explore using what the customer said, not that they’re suitable or best. Mention they aren’t the only options.',
       };
     }
     case 'record_next_step': {

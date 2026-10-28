@@ -172,7 +172,8 @@ describe('goals, offerings, next steps and calculations', () => {
     expect(toolOutputs(requests).map((o) => o.status)).toEqual(['applied', 'shown']);
     expect(r.body.effects).toEqual([
       { type: 'goalSet', goal: { type: 'build_wealth', detail: 'learn how investing works' } },
-      { type: 'offeringsShown', ids: ['investment-funds', 'tfsa'], reason: 'You want to learn about longer-term investing.' },
+      // Timeline not stated yet: the shared rule keeps flexible options; funds stay because the customer asked about investing.
+      { type: 'offeringsShown', ids: ['tfsa', 'investment-funds'], reason: 'You want to learn about longer-term investing.' },
     ]);
   });
 

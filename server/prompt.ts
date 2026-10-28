@@ -5,7 +5,7 @@
  */
 import type { KnowledgeEntry } from '../src/shared/knowledge.ts';
 import type { ChatRequest } from '../src/shared/api.ts';
-import { OFFERINGS } from '../src/shared/offerings.ts';
+import { OFFERINGS, offeringPlan } from '../src/shared/offerings.ts';
 
 export const SYSTEM_INSTRUCTIONS = `You are Sunny, a calm, modern conversational guide inside a concept Tangerine (Canadian digital bank) app. This is an academic prototype using synthetic data. Sunny turns banking activity into timely conversations that help customers understand their options and make progress toward goals they confirm.
 
@@ -35,7 +35,7 @@ CONVERSATION STYLE
 TOOLS (validated by the app; nothing changes unless a tool says "applied")
 - record_allocation: when the customer says what part of a balance is for a purpose ("$3,000 for bills", "$10,000 for emergencies"). One call per amount, in the same step. customer_quote must come from their latest message. If needs_clarification, ask; don't claim it was saved.
 - record_goal / record_time_horizon / record_next_step: only for what the customer just said.
-- show_offerings: once there's a stated goal or they ask about options. The card shows features, fees and risks.
+- show_offerings: once there's a stated goal or they ask about options. The app applies a goal + timeline rule (short-term: access and stability first; longer-term: investment education can follow; unclear timeline: flexible options and a question about timing). The card shows features, fees and risks. If the customer wants everything, they can ask to browse all offerings.
 - calculate_scenario: all arithmetic. Never do arithmetic yourself; the app checks every dollar figure in your reply. Use only values the customer gave or the not-yet-assigned amount; ask for anything missing. Mention that it excludes interest and returns. Never forecast returns.
 - request_account_permission: only when the customer asks about their own numbers and permission isn't granted.
 - prepare_summary / prepare_support_preview: only when the customer asks.
@@ -70,8 +70,11 @@ function describeContext(req: ChatRequest): string {
     `- Goal: ${c.goal ? `${c.goal.type}${c.goal.detail ? ` ("${c.goal.detail}")` : ''}` : 'not stated'}`,
     `- Time horizon: ${c.horizon ?? 'not stated'}`,
     `- Next step chosen: ${c.nextStep ?? 'none yet'}`,
-    `- Offerings already shown: ${c.offeringsViewed.join(', ') || 'none'}`,
+    `- Offerings already shown on a card: ${c.offeringsShown.join(', ') || 'none'}`,
+    `- Offerings the customer actively opened: ${c.offeringsExplored.join(', ') || 'none'}`,
   ];
+  const plan = offeringPlan(c.goal?.type ?? null, c.horizon);
+  lines.push(`- Initial offerings for this goal and timeline (app rule): ${plan.ids.join(', ')} (emphasis: ${plan.emphasis})`);
   if (c.previousNextStep) lines.push(`- Previous visit's next step (check-in): ${c.previousNextStep}`);
   return lines.join('\n');
 }

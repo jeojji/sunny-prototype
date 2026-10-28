@@ -139,7 +139,8 @@ export function sanitizeRequest(body: unknown): ChatRequest {
       goal: goalType ? { type: goalType, detail: typeof c.goal?.detail === 'string' ? c.goal.detail.slice(0, 200) : null } : null,
       horizon: oneOf(c.horizon, HORIZONS),
       nextStep: oneOf(c.nextStep, NEXT_STEPS),
-      offeringsViewed: validateOfferingIds(c.offeringsViewed),
+      offeringsShown: validateOfferingIds(c.offeringsShown),
+      offeringsExplored: validateOfferingIds(c.offeringsExplored),
       previousNextStep: oneOf(c.previousNextStep, NEXT_STEPS),
     },
   };

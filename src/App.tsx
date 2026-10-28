@@ -6,7 +6,7 @@ import { HandoffPreview } from './components/HandoffPreview';
 import { Header } from './components/Header';
 import { SummaryView } from './components/SummaryView';
 import { fetchStatus } from './conversation/aiClient';
-import { createInitialState } from './conversation/engine';
+import { createInitialState, normalizeMemory } from './conversation/engine';
 import { scriptedProvider } from './conversation/provider';
 import type { ConversationState, EngineMode, Memory } from './conversation/types';
 import { useSunny, type ChatFn } from './conversation/useSunny';
@@ -68,7 +68,8 @@ function stateFor(id: string, store: Store, mode: EngineMode): ConversationState
     profile.reviewFlag = saved.reviewFlag;
     profile.historyDaysAvailable = saved.historyDaysAvailable;
   }
-  return createInitialState(profile, { memory: saved?.memory, todayIndex: saved?.todayIndex, mode, signalConfig: store.signalConfig });
+  // A fresh session: saved memory is migrated and account-data permission starts over.
+  return createInitialState(profile, { memory: saved ? normalizeMemory(saved.memory) : undefined, todayIndex: saved?.todayIndex, mode, signalConfig: store.signalConfig });
 }
 
 interface Props {

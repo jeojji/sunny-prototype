@@ -3,6 +3,8 @@ import { hasPlan, signalFor } from '../conversation/engine';
 import { getPrompt, type AllocationFormSpec, type ScenarioFormSpec } from '../conversation/prompts';
 import type { ConversationState, CustomerTurn, Message, SunnyEvent } from '../conversation/types';
 import type { OrbMode } from '../conversation/useSunny';
+import { TOPICS } from '../data/education';
+import { TOPIC_MENU } from '../conversation/navigation';
 import type { Purpose } from '../domain/allocations';
 import { isValidAmount, isValidMonths, MAX_MONTHS, parseAmount } from '../lib/calc';
 import { LIMITS } from '../shared/api';
@@ -82,6 +84,7 @@ export function Chat({ state, orb, thinking, pendingSay, send, sendText, dispatc
               onUseScripted={onUseScripted}
               isLast={i === state.messages.length - 1}
               busy={thinking}
+              onExploreOffering={(id) => dispatch({ type: 'exploreOffering', id })}
             />
           ))}
           {pendingSay && (
@@ -122,6 +125,7 @@ export function Chat({ state, orb, thinking, pendingSay, send, sendText, dispatc
               )}
             </>
           )}
+          <NavRow state={state} disabled={thinking} send={send} sendText={sendText} dispatch={dispatch} />
           <Composer disabled={thinking} onSend={sendText} />
         </div>
       </section>
@@ -132,6 +136,84 @@ export function Chat({ state, orb, thinking, pendingSay, send, sendText, dispatc
         </aside>
       )}
     </main>
+  );
+}
+
+/**
+ * Always-available navigation, independent of the current suggestions (and of
+ * model output in AI mode): a topic menu, a secondary way to finish, and a way
+ * to stop using account details.
+ */
+function NavRow({
+  state,
+  disabled,
+  send,
+  sendText,
+  dispatch,
+}: {
+  state: ConversationState;
+  disabled: boolean;
+  send: (turn: CustomerTurn) => void;
+  sendText: (text: string) => void;
+  dispatch: (event: SunnyEvent) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const menuId = useId();
+  const ai = state.mode === 'ai';
+  const m = state.memory;
+  const pick = (scripted: CustomerTurn, aiText: string) => {
+    setOpen(false);
+    if (ai) sendText(aiText);
+    else send(scripted);
+  };
+  const goalLabel = m.goal && (!m.horizon || !m.nextStep) ? 'Back to my goal' : m.prefs.earmarked && !m.goal ? 'Explore a different goal' : 'Help me think through a goal';
+  return (
+    <div className="nav-row">
+      <div className="nav-row-actions">
+        <button type="button" className="link-button" aria-expanded={open} aria-controls={menuId} onClick={() => setOpen((o) => !o)} disabled={disabled}>
+          {open ? 'Close topics' : 'Explore other topics'}
+        </button>
+        {m.permission === 'granted' && (
+          <button type="button" className="link-button" onClick={() => dispatch({ type: 'revokePermission' })} disabled={disabled}>
+            Stop using my account details
+          </button>
+        )}
+        <button type="button" className="link-button nav-done" onClick={() => dispatch({ type: 'setView', view: 'dashboard' })}>
+          Done for now
+        </button>
+      </div>
+      {open && (
+        <div className="topic-menu" id={menuId} role="group" aria-label="Other topics">
+          {TOPIC_MENU.map((g) => (
+            <div key={g.heading} className="topic-group">
+              <p className="topic-group-h">{g.heading}</p>
+              <div className="topic-group-items">
+                {g.topics.map((t) => (
+                  <button key={t} type="button" className="chip chip-small" onClick={() => pick({ event: { type: 'openTopic', topic: t }, say: TOPICS[t].question }, TOPICS[t].question)}>
+                    {TOPICS[t].question}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+          <div className="topic-group">
+            <p className="topic-group-h">More</p>
+            <div className="topic-group-items">
+              <button type="button" className="chip chip-small" onClick={() => pick({ event: { type: 'browseOfferings' }, say: 'Browse all Tangerine offerings' }, 'Show me all Tangerine offerings.')}>
+                Browse all Tangerine offerings
+              </button>
+              <button
+                type="button"
+                className="chip chip-small"
+                onClick={() => pick({ event: { type: goalLabel === 'Back to my goal' ? 'resumeGoal' : 'exploreGoal' }, say: goalLabel }, goalLabel === 'Back to my goal' ? 'Let’s get back to my goal.' : 'Help me think through a goal.')}
+              >
+                {goalLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -158,6 +240,7 @@ function MessageRow({
   onUseScripted,
   isLast,
   busy,
+  onExploreOffering,
 }: {
   message: Message;
   showAvatar: boolean;
@@ -168,6 +251,7 @@ function MessageRow({
   onUseScripted: () => void;
   isLast: boolean;
   busy: boolean;
+  onExploreOffering: (id: string) => void;
 }) {
   const sunny = message.role === 'sunny';
   const card = message.card;
@@ -184,7 +268,7 @@ function MessageRow({
         {card?.kind === 'education' && <EducationCard topic={card.topic} />}
         {card?.kind === 'signal' && <SignalCard signal={signalFor(state)} observationDays={state.signalConfig.observationDays} />}
         {card?.kind === 'allocations' && <AllocationCard snapshot={card.snapshot} />}
-        {card?.kind === 'offerings' && <OfferingsCard ids={card.ids} reason={card.reason} />}
+        {card?.kind === 'offerings' && <OfferingsCard ids={card.ids} reason={card.reason} onExplore={onExploreOffering} />}
         {card?.kind === 'scenario' && (
           <ScenarioCard input={card.input} hypothetical={card.hypothetical} outdated={JSON.stringify(card.input) !== currentScenario} />
         )}

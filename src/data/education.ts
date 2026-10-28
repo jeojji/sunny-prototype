@@ -16,6 +16,7 @@ export type TopicId =
   | 'gic'
   | 'funds'
   | 'gic_vs_fund'
+  | 'savings_vs_gic'
   | 'fees'
   | 'leave_in_chequing'
   | 'need_next_year'
@@ -190,6 +191,21 @@ export const TOPICS: Record<TopicId, TopicContent> = {
     related: ['horizon', 'fees', 'risk'],
     draft: false,
   },
+  savings_vs_gic: {
+    id: 'savings_vs_gic',
+    question: 'How do savings accounts and GICs compare?',
+    title: 'Savings account vs. GIC',
+    body: ['Both are ways to keep money stable; the main difference is access:'],
+    points: [
+      'Tangerine Savings Account: money stays accessible; interest is calculated daily and the rate can change; no monthly fee or minimum balance.',
+      'GIC: you get your principal back at the end of a set term, plus interest. Tangerine GICs aren’t cashable before maturity, except approved financial-hardship redemptions.',
+      'Eligible deposits and GICs at a CDIC member can be insured within CDIC’s limits.',
+    ],
+    simple: 'A savings account lets you take money out anytime. A GIC locks it in for a set time, usually in exchange for knowing what you’ll earn.',
+    sources: ['tng-savings-account', 'tng-gic', 'fcac-gic-rights', 'cdic-coverage'],
+    related: ['tfsa', 'need_next_year', 'horizon'],
+    draft: false,
+  },
   fees: {
     id: 'fees',
     question: 'What fees should I know about?',
@@ -226,7 +242,7 @@ export const TOPICS: Record<TopicId, TopicContent> = {
     ],
     simple: 'If you need it soon, keep it somewhere safe and easy to get to.',
     sources: ['fcac-goals', 'tng-gic', 'tng-savings-account'],
-    related: ['gic', 'horizon', 'leave_in_chequing'],
+    related: ['savings_vs_gic', 'tfsa', 'horizon'],
     draft: false,
   },
   tangerine_help: {
@@ -339,7 +355,7 @@ export const TOPICS: Record<TopicId, TopicContent> = {
 /** Topics most relevant to each goal (for suggestions). */
 export const TOPICS_FOR_GOAL: Record<string, TopicId[]> = {
   build_wealth: ['risk', 'account_vs_holdings', 'gic_vs_fund', 'fees', 'funds'],
-  accessible_interest: ['leave_in_chequing', 'gic', 'need_next_year', 'tfsa'],
+  accessible_interest: ['leave_in_chequing', 'savings_vs_gic', 'need_next_year', 'tfsa'],
   first_home: ['first_home', 'fhsa_tangerine', 'need_next_year', 'tfsa'],
   understand_options: ['saving_vs_investing', 'account_vs_holdings', 'gic_vs_fund', 'risk'],
   other: ['saving_vs_investing', 'horizon', 'tangerine_help'],

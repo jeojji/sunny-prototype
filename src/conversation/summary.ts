@@ -24,8 +24,13 @@ export interface Summary {
   goalDetail: string | null;
   horizon: string | null;
   topics: string[];
-  offerings: string[];
+  /** Offerings Sunny displayed. */
+  offeringsShown: string[];
+  /** Offerings the customer actively opened. */
+  offeringsExplored: string[];
   nextStep: string | null;
+  nextStepDone: boolean;
+  completedSteps: string[];
   questions: string[];
   unknowns: string[];
   scenario: { input: ScenarioFacts; result: ProjectionResult } | null;
@@ -88,9 +93,13 @@ export function autoNote(state: ConversationState): string {
   if (m.horizon) parts.push(`Timeframe: ${HORIZON_LABEL[m.horizon].toLowerCase()}.`);
   const topics = topicsDiscussed(state);
   if (topics.length) parts.push(`I’ve learned about: ${topics.slice(0, 5).join('; ')}.`);
-  if (m.nextStep) parts.push(`Next step I chose: ${NEXT_STEP_LABEL[m.nextStep].toLowerCase()}.`);
+  const opened = names(m.offeringsExplored);
+  if (opened.length) parts.push(`Offerings I opened: ${opened.join(', ')}.`);
+  if (m.nextStep) parts.push(`Next step I chose: ${NEXT_STEP_LABEL[m.nextStep].toLowerCase()}${m.nextStepDone ? ' (done)' : ''}.`);
   return parts.join(' ') || 'I’d like to talk about my options.';
 }
+
+const names = (ids: string[]) => ids.map((id) => getOffering(id)?.name).filter((n): n is string => Boolean(n));
 
 export function buildSummary(state: ConversationState): Summary {
   const m = state.memory;
@@ -113,8 +122,11 @@ export function buildSummary(state: ConversationState): Summary {
     goalDetail: m.goal?.detail ?? null,
     horizon: m.horizon ? HORIZON_LABEL[m.horizon] : null,
     topics: topicsDiscussed(state),
-    offerings: m.offeringsViewed.map((id) => getOffering(id)?.name).filter((n): n is string => Boolean(n)),
+    offeringsShown: names(m.offeringsShown),
+    offeringsExplored: names(m.offeringsExplored),
     nextStep: m.nextStep ? NEXT_STEP_LABEL[m.nextStep] : null,
+    nextStepDone: m.nextStepDone,
+    completedSteps: m.completedSteps.map((s) => NEXT_STEP_LABEL[s]),
     questions: m.supportQuestions,
     unknowns: unknowns(state, snap),
     scenario: m.scenario ? { input: m.scenario, result: projectWithoutReturns(m.scenario) } : null,

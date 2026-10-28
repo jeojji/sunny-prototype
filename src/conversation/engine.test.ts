@@ -106,7 +106,8 @@ describe('main demo loop (scripted)', () => {
     expect(sum.prompted).toMatch(/stayed above \$25,000 for 90 days/);
     expect(sum.goal).toBe('Build wealth over time');
     expect(sum.nextStep).toBe('Learn about investment risk first');
-    expect(sum.offerings).toContain('Tangerine Investment Funds');
+    expect(sum.offeringsShown).toContain('Tangerine Investment Funds');
+    expect(sum.offeringsExplored).toEqual([]);
     expect(sum.unknowns.join(' ')).toMatch(/comfort with investment risk/);
   });
 });
@@ -222,7 +223,7 @@ describe('later visits', () => {
     expect(pendingCheckin(r)).toBeNull();
     r = run(r, { type: 'simulateLaterVisit', days: 30 });
     expect(pendingCheckin(r)).not.toBeNull();
-    expect(pendingCheckin(run(withNextStep('Not right now'), { type: 'simulateLaterVisit', days: 30 }))).toBeNull();
+    expect(pendingCheckin(run(click(withNextStep('More next steps'), 'Not right now'), { type: 'simulateLaterVisit', days: 30 }))).toBeNull();
   });
 
   it('“Change my goal” asks the goal question again', () => {

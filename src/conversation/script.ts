@@ -3,10 +3,10 @@
  * messages used in both modes). Pure functions of current values only.
  */
 import { PURPOSE_LABEL, type Allocation } from '../domain/allocations';
-import type { SignalResult } from '../domain/signal';
+import { signalSentence, type SignalResult } from '../domain/signal';
 import { money } from '../lib/format';
 import type { ProjectionResult } from '../lib/calc';
-import type { GoalType } from '../shared/offerings';
+import type { Emphasis, GoalType } from '../shared/offerings';
 import type { Horizon, Memory, NextStepId } from './types';
 
 export const GOAL_LABEL: Record<GoalType, string> = {
@@ -48,13 +48,21 @@ const NEXT_STEP_CHECKIN: Record<NextStepId, string> = {
 const listAllocations = (items: Allocation[]) =>
   items.map((a) => `${money(a.amount)} ${a.purpose === 'emergency' ? 'is your emergency reserve' : `is for ${PURPOSE_LABEL[a.purpose].toLowerCase()}`}`).join(' and ');
 
+const OFFERINGS_INTRO = {
+  build_wealth: 'You mentioned wanting to understand longer-term investing. Here are Tangerine offerings you could learn about, with their features, fees and risks. This isn’t a recommendation, and they aren’t the only options available.',
+  accessible_interest: 'You mentioned keeping money accessible while earning interest. Here are Tangerine offerings you could learn about, with their features and conditions. This isn’t a recommendation, and they aren’t the only options available.',
+  first_home: 'You mentioned saving for a first home. Here are Tangerine offerings you could learn about. I couldn’t confirm an FHSA at Tangerine, so that’s worth asking them. This isn’t a recommendation.',
+  understand_options: 'You wanted to understand the options before deciding. Here’s what Tangerine offers, with features, fees and risks. This isn’t a recommendation, and they aren’t the only options available.',
+  other: 'Here are Tangerine offerings you could learn about. This isn’t a recommendation, and they aren’t the only options available.',
+  } satisfies Record<GoalType, string>;
+
 export const script = {
   greetingSelf: (name: string) => `Hi ${name}, what would you like to understand or work on today?`,
   scopeNote:
     'I can explain saving and investing, introduce Tangerine options, and help you think through a goal. I don’t make financial decisions for you.',
 
   nudgeOpen: (name: string, signal: SignalResult, days: number) =>
-    `Hi ${name}. Here’s what prompted this: your chequing balance has stayed above ${money(signal.evidence.threshold)} for the past ${days} days. That’s only an observation. A balance doesn’t tell me what the money is for.`,
+    `Hi ${name}. Here’s what prompted this: ${signalSentence(signal, days)} That’s only an observation. A balance doesn’t tell me what the money is for.`,
   permissionAsk:
     'To make this conversation relevant, may I use your Tangerine account details, like balances and recent activity? If you’d rather keep it general, that’s fine too.',
   permissionYes: 'Thanks. I’ll use your Tangerine account details in this conversation only.',
@@ -95,15 +103,34 @@ export const script = {
     not_sure: 'That’s fine. Not knowing yet is a good reason to keep some flexibility.',
   } satisfies Record<Horizon, string>,
 
-  offeringsIntro: {
-    build_wealth: 'You mentioned wanting to understand longer-term investing. Here are Tangerine offerings you could learn about, with their features, fees and risks. This isn’t a recommendation, and they aren’t the only options available.',
-    accessible_interest: 'You mentioned keeping money accessible while earning interest. Here are Tangerine offerings you could learn about, with their features and conditions. This isn’t a recommendation, and they aren’t the only options available.',
-    first_home: 'You mentioned saving for a first home. Here are Tangerine offerings you could learn about. I couldn’t confirm an FHSA at Tangerine, so that’s worth asking them. This isn’t a recommendation.',
-    understand_options: 'You wanted to understand the options before deciding. Here’s what Tangerine offers, with features, fees and risks. This isn’t a recommendation, and they aren’t the only options available.',
-    other: 'Here are Tangerine offerings you could learn about. This isn’t a recommendation, and they aren’t the only options available.',
-  } satisfies Record<GoalType, string>,
-  offeringsReason: (goal: GoalType | null) =>
-    goal === 'build_wealth' ? 'You said you want to build wealth and learn how investing works.' : goal ? `You said: ${GOAL_LABEL[goal].toLowerCase()}.` : 'You asked about Tangerine options.',
+  offeringsIntro: OFFERINGS_INTRO,
+  offeringsReason: (goal: GoalType | null, horizon: Horizon | null = null) => {
+    const g = goal === 'build_wealth' ? 'You said you want to build wealth and learn how investing works' : goal ? `You said: ${GOAL_LABEL[goal].toLowerCase()}` : 'You asked about Tangerine options';
+    return horizon ? `${g}, and your timeframe is ${HORIZON_LABEL[horizon].toLowerCase()}.` : `${g}.`;
+  },
+  /** Introduction for the initial product exploration, shaped by goal and timeline. */
+  offeringsIntroFor: (goal: GoalType | null, horizon: Horizon | null, emphasis: Emphasis) => {
+    const tail = ' This isn’t a recommendation or a suitability decision, and they aren’t the only options available.';
+    switch (emphasis) {
+      case 'access':
+        return `Since you might need this money within a year, here are Tangerine options focused on access and stability, including restrictions to know about (for example, Tangerine GICs generally can’t be cashed before maturity).${tail}`;
+      case 'balanced':
+        return horizon === '1_to_5_years'
+          ? `With a one-to-five-year timeline, here are Tangerine options that keep money accessible or stable${goal === 'build_wealth' || goal === 'understand_options' ? ', plus investment funds to learn about, since values can go down as well as up over shorter periods' : ''}.${tail}`
+          : OFFERINGS_INTRO[goal ?? 'understand_options'];
+      case 'growth':
+        return OFFERINGS_INTRO.build_wealth;
+      case 'flexible':
+        return `Since the timing isn’t settled yet, here are flexible Tangerine options that keep your choices open. Knowing roughly when you’d need the money would help narrow things down.${tail}`;
+    }
+  },
+  browseIntro: 'Here’s the full list of Tangerine offerings in Sunny’s verified catalogue, with features, fees and risks. Browsing isn’t a recommendation.',
+  exploreGoalIntro: (note: string | null) =>
+    `Sure. This is separate from the money you set aside${note ? ` ${note}` : ''}. I won’t use it for a new goal. What would you like to explore?`,
+  doneAck: (label: string) =>
+    `Thanks for letting me know. I’ve marked “${label}” as done. Nothing in your accounts has changed. What would you like to do next?`,
+  anotherStep: 'Sure. Which next step would you like instead?',
+  permissionRevoked: 'Done. I’ve stopped using your account details. I’ll keep things general and only use what you tell me.',
 
   nextStepAsk: 'What would you like to do next? There’s no need to decide anything today.',
   nextStepAck: {

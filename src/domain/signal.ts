@@ -131,13 +131,35 @@ export function evaluateElevatedBalance({ history, todayIndex, config = DEFAULT_
   return { rule: 'elevated_chequing_balance', status, show: status === 'qualifies', evidence, checks };
 }
 
+/** True when some days in the window have no closing balance (but coverage still met the sufficiency rule). */
+export function hasMissingDays(result: SignalResult): boolean {
+  return result.evidence.daysWithData < result.evidence.daysInWindow;
+}
+
+/**
+ * One-sentence description of what was observed, honest about coverage:
+ * with missing days it says "on all observed days" and how many days had data.
+ */
+export function signalSentence(result: SignalResult, observationDays: number): string {
+  const e = result.evidence;
+  if (hasMissingDays(result)) {
+    return `your chequing balance was above ${money(e.threshold)} on all ${e.daysWithData} days with balance data in the past ${observationDays} days.`;
+  }
+  return `your chequing balance has stayed above ${money(e.threshold)} for the past ${observationDays} days.`;
+}
+
 /** Customer-facing "Why am I seeing this?" text, built from the actual evidence. */
 export function explainSignal(result: SignalResult, observationDays: number): string {
   const e = result.evidence;
   if (e.minBalance === null) return '';
+  const missing = e.daysInWindow - e.daysWithData;
+  const observed =
+    missing > 0
+      ? `Balance data is available for ${e.daysWithData} of the last ${observationDays} days. On all observed days, your chequing balance at the end of the day stayed between ${money(e.minBalance)} and ${money(e.maxBalance ?? e.minBalance)}, never below ${money(e.threshold)}. ${missing} day${missing === 1 ? ' has' : 's have'} no data, so Sunny can’t say what happened on ${missing === 1 ? 'that day' : 'those days'}. `
+      : `Over the last ${observationDays} days, your chequing balance at the end of each day stayed between ${money(e.minBalance)} and ${money(e.maxBalance ?? e.minBalance)}, never below ${money(e.threshold)}. `;
   return (
-    `Over the last ${observationDays} days, your chequing balance at the end of each day stayed between ${money(e.minBalance)} and ${money(e.maxBalance ?? e.minBalance)}, ` +
-    `never below ${money(e.threshold)}. When a balance stays at that level for a while, Sunny offers a conversation. ` +
+    observed +
+    `When a balance stays at that level for a while, Sunny offers a conversation. ` +
     `It’s a reason to ask, not a judgment that the money is available or needs to go anywhere. This was worked out from your Tangerine account activity in this demo (synthetic data); nothing was shared with the AI.`
   );
 }

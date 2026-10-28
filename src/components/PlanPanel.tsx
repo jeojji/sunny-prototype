@@ -50,17 +50,23 @@ export function PlanPanel({ state }: { state: ConversationState }) {
           {m.nextStep && (
             <div className="fact">
               <dt>Next step</dt>
-              <dd>{NEXT_STEP_LABEL[m.nextStep]}</dd>
+              <dd>
+                {NEXT_STEP_LABEL[m.nextStep]}
+                {m.nextStepDone ? ' (done)' : ''}
+              </dd>
             </div>
           )}
         </dl>
       )}
-      {m.offeringsViewed.length > 0 && (
+      {m.offeringsShown.length > 0 && (
         <>
-          <h3 className="panel-subtitle">Offerings you looked at</h3>
+          <h3 className="panel-subtitle">Offerings Sunny showed</h3>
           <ul className="plain-list panel-list">
-            {m.offeringsViewed.map((id) => (
-              <li key={id}>{getOffering(id)?.name}</li>
+            {m.offeringsShown.map((id) => (
+              <li key={id}>
+                {getOffering(id)?.name}
+                {m.offeringsExplored.includes(id) && <span className="opened-tag"> · you opened this</span>}
+              </li>
             ))}
           </ul>
         </>

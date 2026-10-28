@@ -36,7 +36,8 @@ export function buildChatRequest(state: ConversationState): ChatRequest {
   return {
     firstName: state.profile.firstName,
     messages: state.messages
-      .filter((msg) => !msg.local && msg.text.trim())
+      // Messages containing account details are only sent while permission is granted (e.g. after a revoke, they stay out).
+      .filter((msg) => !msg.local && msg.text.trim() && (granted || !msg.accountDetail))
       .slice(-LIMITS.maxMessages)
       .map((msg) => ({ role: msg.role, text: msg.text.slice(0, LIMITS.maxMessageChars) })),
     permission: m.permission,
@@ -65,7 +66,8 @@ export function buildChatRequest(state: ConversationState): ChatRequest {
       goal: m.goal,
       horizon: m.horizon,
       nextStep: m.nextStep,
-      offeringsViewed: m.offeringsViewed,
+      offeringsShown: m.offeringsShown,
+      offeringsExplored: m.offeringsExplored,
       previousNextStep: state.origin === 'checkin' ? m.nextStep : null,
     },
   };

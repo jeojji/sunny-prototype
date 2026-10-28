@@ -7,13 +7,14 @@
  * via 'aiTurn' and are re-validated here before anything changes.
  */
 import { balancesOn, visibleHistory, type Relationship } from '../data/customers';
-import { TOPICS, TOPICS_FOR_GOAL, type TopicId } from '../data/education';
+import { TOPICS, type TopicId } from '../data/education';
 import { applyAllocations, summarizeAccount, type Allocation } from '../domain/allocations';
 import { DEFAULT_SIGNAL_CONFIG, evaluateElevatedBalance, type SignalConfig, type SignalResult } from '../domain/signal';
 import { projectWithoutReturns } from '../lib/calc';
 import { GOALS, HORIZONS, NEXT_STEPS, type ChatEffect } from '../shared/api';
 import { validateSourceIds } from '../shared/knowledge';
-import { offeringsFor, validateOfferingIds, getOffering } from '../shared/offerings';
+import { getOffering, offeringPlan, OFFERINGS, validateOfferingIds } from '../shared/offerings';
+import { cleanSuggestions, latestCustomerText } from './navigation';
 import { GOAL_LABEL, HORIZON_LABEL, NEXT_STEP_LABEL, script } from './script';
 import type {
   AllocationSnapshot,
@@ -40,13 +41,37 @@ export function createMemory(): Memory {
     nextStep: null,
     prompt: null,
     topicsExplored: [],
-    offeringsViewed: [],
+    offeringsShown: [],
+    offeringsExplored: [],
     sourcesCited: [],
     supportQuestions: [],
     scenario: null,
+    nextStepDone: false,
+    completedSteps: [],
     prefs: { earmarked: false, earmarkNote: null, dismissedUntil: null, checkinsStopped: false, remindAfter: null },
     lastConversationDay: null,
     visit: 1,
+  };
+}
+
+/**
+ * Make saved memory safe to use: fill fields added in later versions and map
+ * the old `offeringsViewed` (which meant "shown") to `offeringsShown`.
+ * Account-data permission never carries over into a new session.
+ */
+export function normalizeMemory(raw: unknown): Memory {
+  const base = createMemory();
+  if (!raw || typeof raw !== 'object') return base;
+  const r = raw as Partial<Memory> & { offeringsViewed?: string[] };
+  return {
+    ...base,
+    ...r,
+    permission: 'not_asked',
+    offeringsShown: r.offeringsShown ?? r.offeringsViewed ?? [],
+    offeringsExplored: r.offeringsExplored ?? [],
+    nextStepDone: r.nextStepDone ?? false,
+    completedSteps: r.completedSteps ?? [],
+    prefs: { ...base.prefs, ...(r.prefs ?? {}) },
   };
 }
 
@@ -104,7 +129,7 @@ export function allocationSnapshot(state: ConversationState): AllocationSnapshot
 /** A later-visit check-in, only when it reflects a real saved next step and the customer hasn't opted out. */
 export function pendingCheckin(state: ConversationState): { text: string; step: NextStepId } | null {
   const m = state.memory;
-  if (!m.nextStep || m.nextStep === 'not_proceeding' || m.prefs.checkinsStopped) return null;
+  if (!m.nextStep || m.nextStep === 'not_proceeding' || m.nextStepDone || m.prefs.checkinsStopped) return null;
   if (m.lastConversationDay === null || state.todayIndex <= m.lastConversationDay) return null;
   if (m.prefs.remindAfter !== null && state.todayIndex < m.prefs.remindAfter) return null;
   return { text: script.checkinPrompt(m), step: m.nextStep };
@@ -216,10 +241,13 @@ function ask(d: Draft, stage: Stage) {
 function confirmText(d: Draft) {
   const snap = allocationSnapshot(d);
   if (mem(d).permission === 'granted' || d.mode === 'scripted') {
-    say(d, mem(d).permission === 'declined' ? script.allocationsAckGeneral(snap.items) : script.allocationsAck(snap.balance, snap.items, snap.unassigned, snap.savingsBalance), {
-      kind: 'allocations',
-      snapshot: snap,
-    });
+    const general = mem(d).permission === 'declined';
+    say(
+      d,
+      general ? script.allocationsAckGeneral(snap.items) : script.allocationsAck(snap.balance, snap.items, snap.unassigned, snap.savingsBalance),
+      { kind: 'allocations', snapshot: snap },
+      general ? {} : { accountDetail: true },
+    );
   } else {
     say(d, script.allocationsAckGeneral(snap.items));
   }
@@ -238,16 +266,30 @@ function openTopic(d: Draft, topic: TopicId, simple: boolean) {
   }
 }
 
+function markShown(d: Draft, ids: string[]) {
+  const m = mem(d);
+  for (const id of ids) if (!m.offeringsShown.includes(id)) m.offeringsShown = [...m.offeringsShown, id];
+  cite(d, [...new Set(ids.flatMap((id) => getOffering(id)?.sources ?? []))]);
+}
+
+/** Initial product exploration, shaped by goal and timeline (shared rule with the server). */
 function showOfferings(d: Draft) {
   const m = mem(d);
-  const list = offeringsFor(m.goal?.type ?? null);
-  const ids = list.map((o) => o.id);
-  for (const id of ids) if (!m.offeringsViewed.includes(id)) m.offeringsViewed = [...m.offeringsViewed, id];
-  const sources = [...new Set(list.flatMap((o) => o.sources))];
-  cite(d, sources);
-  say(d, script.offeringsIntro[m.goal?.type ?? 'understand_options'], { kind: 'offerings', ids, reason: script.offeringsReason(m.goal?.type ?? null) });
+  const plan = offeringPlan(m.goal?.type ?? null, m.horizon);
+  markShown(d, plan.ids);
+  say(d, script.offeringsIntroFor(m.goal?.type ?? null, m.horizon, plan.emphasis), {
+    kind: 'offerings',
+    ids: plan.ids,
+    reason: script.offeringsReason(m.goal?.type ?? null, m.horizon),
+  });
   say(d, script.nextStepAsk);
   d.stage = 'explore';
+}
+
+function browseOfferings(d: Draft) {
+  const ids = OFFERINGS.map((o) => o.id);
+  markShown(d, ids);
+  say(d, script.browseIntro, { kind: 'offerings', ids, reason: 'The full verified catalogue, shown because you asked to browse.' });
 }
 
 function applyAllocationList(d: Draft, list: Allocation[]): 'ok' | 'over' | 'negative' {
@@ -283,6 +325,7 @@ function setAllocations(d: Draft, list: Allocation[]) {
 function chooseNextStep(d: Draft, step: NextStepId) {
   const m = mem(d);
   m.nextStep = step;
+  m.nextStepDone = false;
   switch (step) {
     case 'learn_risk': {
       say(d, script.nextStepAck.learn_risk);
@@ -298,7 +341,7 @@ function chooseNextStep(d: Draft, step: NextStepId) {
       ask(d, 'scenario');
       return;
     case 'read_product_page': {
-      const ids = m.offeringsViewed.length ? m.offeringsViewed : offeringsFor(m.goal?.type ?? null).map((o) => o.id);
+      const ids = m.offeringsShown.length ? m.offeringsShown : offeringPlan(m.goal?.type ?? null, m.horizon).ids;
       say(d, script.nextStepAck.read_product_page, { kind: 'offerings', ids, reason: 'Official pages for the options you looked at.' });
       break;
     }
@@ -320,8 +363,8 @@ function suggestedQuestions(d: Draft): string[] {
   const m = mem(d);
   const qs: string[] = [];
   if (m.goal?.type === 'build_wealth') qs.push('Given my goals and timeline, how should I think about risk?');
-  if (m.offeringsViewed.includes('investment-funds')) qs.push('How do the Tangerine portfolios differ, and what are the total costs?');
-  if (m.offeringsViewed.includes('tfsa') || m.offeringsViewed.includes('rsp')) qs.push('Would a TFSA or an RSP make more sense for my situation?');
+  if (m.offeringsShown.includes('investment-funds')) qs.push('How do the Tangerine portfolios differ, and what are the total costs?');
+  if (m.offeringsShown.includes('tfsa') || m.offeringsShown.includes('rsp')) qs.push('Would a TFSA or an RSP make more sense for my situation?');
   if (m.goal?.type === 'first_home') qs.push('Does Tangerine offer an FHSA?');
   if (!qs.length) qs.push('What should I consider before deciding what to do with this money?');
   return qs;
@@ -356,7 +399,7 @@ function openConversation(d: Draft, origin: Origin) {
   }
   if (origin === 'nudge') {
     const signal = signalFor(d);
-    say(d, script.nudgeOpen(d.profile.firstName, signal, d.signalConfig.observationDays), m.permission === 'granted' ? { kind: 'signal' } : undefined);
+    say(d, script.nudgeOpen(d.profile.firstName, signal, d.signalConfig.observationDays), m.permission === 'granted' ? { kind: 'signal' } : undefined, { accountDetail: true });
     if (m.permission === 'granted') ask(d, 'purpose');
     else ask(d, 'permission');
     return;
@@ -402,15 +445,15 @@ function applyAiEffects(d: Draft, effects: ChatEffect[]) {
       case 'offeringsShown': {
         const ids = validateOfferingIds(e.ids);
         if (ids.length) {
-          for (const id of ids) if (!m.offeringsViewed.includes(id)) m.offeringsViewed = [...m.offeringsViewed, id];
-          cite(d, [...new Set(ids.flatMap((id) => getOffering(id)?.sources ?? []))]);
-          say(d, '', { kind: 'offerings', ids, reason: (e.reason || script.offeringsReason(m.goal?.type ?? null)).slice(0, 200) }, { local: true });
+          markShown(d, ids);
+          say(d, '', { kind: 'offerings', ids, reason: (e.reason || script.offeringsReason(m.goal?.type ?? null, m.horizon)).slice(0, 200) }, { local: true });
         }
         break;
       }
       case 'nextStepSet':
         if (NEXT_STEPS.includes(e.step)) {
           m.nextStep = e.step;
+          m.nextStepDone = false;
           changes.push(`next step: ${NEXT_STEP_LABEL[e.step].toLowerCase()}`);
         }
         break;
@@ -455,6 +498,11 @@ export function reduce(state: ConversationState, turn: CustomerTurn): Conversati
       return createInitialState(event.profile, { memory: event.memory, todayIndex: event.todayIndex, mode: event.mode ?? state.mode, signalConfig: state.signalConfig });
     case 'setSignalConfig':
       return { ...state, signalConfig: event.config };
+    case 'exploreOffering': {
+      const [id] = validateOfferingIds([event.id]);
+      if (!id || state.memory.offeringsExplored.includes(id)) return state;
+      return { ...state, memory: { ...state.memory, offeringsExplored: [...state.memory.offeringsExplored, id] } };
+    }
     case 'setProfileFlags':
       return {
         ...state,
@@ -498,7 +546,8 @@ export function reduce(state: ConversationState, turn: CustomerTurn): Conversati
         pendingAllocations: null,
         activeTopic: null,
         notice: null,
-        memory: { ...state.memory, visit: state.memory.visit + 1 },
+        // A new visit is a new session: account-data permission must be given again.
+        memory: { ...state.memory, visit: state.memory.visit + 1, permission: 'not_asked' },
       };
     }
     case 'confirmRestart': {
@@ -539,7 +588,24 @@ export function reduce(state: ConversationState, turn: CustomerTurn): Conversati
 
     case 'checkin':
       if (event.action === 'continue') openConversation(d, 'checkin');
-      else if (event.action === 'change_goal') {
+      else if (event.action === 'done' || event.action === 'another_step') {
+        const m = mem(d);
+        d.view = 'chat';
+        d.messages = [];
+        d.origin = 'checkin';
+        d.notice = null;
+        d.activeTopic = null;
+        m.lastConversationDay = d.todayIndex;
+        if (event.action === 'done' && m.nextStep) {
+          m.nextStepDone = true;
+          if (!m.completedSteps.includes(m.nextStep)) m.completedSteps = [...m.completedSteps, m.nextStep];
+          say(d, script.doneAck(NEXT_STEP_LABEL[m.nextStep]));
+        } else {
+          say(d, script.anotherStep);
+        }
+        d.stage = 'explore';
+        d.offer = 'nextSteps';
+      } else if (event.action === 'change_goal') {
         d.view = 'chat';
         d.messages = [];
         d.origin = 'checkin';
@@ -562,7 +628,7 @@ export function reduce(state: ConversationState, turn: CustomerTurn): Conversati
     case 'permission':
       mem(d).permission = event.allow ? 'granted' : 'declined';
       d.permissionPending = false;
-      say(d, event.allow ? script.permissionYes : script.permissionNo, event.allow && d.origin === 'nudge' ? { kind: 'signal' } : undefined);
+      say(d, event.allow ? script.permissionYes : script.permissionNo, event.allow && d.origin === 'nudge' ? { kind: 'signal' } : undefined, event.allow ? { accountDetail: true } : {});
       if (d.origin === 'nudge' && mem(d).allocations.length === 0 && d.stage === 'permission') ask(d, 'purpose');
       else if (d.stage === 'permission') d.stage = 'start';
       break;
@@ -655,6 +721,35 @@ export function reduce(state: ConversationState, turn: CustomerTurn): Conversati
       openTopic(d, event.topic, false);
       break;
 
+    case 'browseOfferings':
+      browseOfferings(d);
+      break;
+
+    case 'exploreGoal': {
+      // Exploring a goal never touches earmarked money or existing allocations.
+      if (!QUESTION_STAGES.includes(d.stage)) d.resumeStage = null;
+      const m = mem(d);
+      say(d, m.prefs.earmarked ? script.exploreGoalIntro(m.prefs.earmarkNote) : script.goalAsk);
+      d.stage = 'goal';
+      d.activeTopic = null;
+      break;
+    }
+
+    case 'resumeGoal': {
+      const m = mem(d);
+      d.activeTopic = null;
+      if (!m.goal) ask(d, 'goal');
+      else if (!m.horizon) ask(d, 'horizon');
+      else showOfferings(d);
+      break;
+    }
+
+    case 'revokePermission':
+      mem(d).permission = 'declined';
+      d.permissionPending = false;
+      say(d, script.permissionRevoked);
+      break;
+
     case 'simpler':
       if (d.activeTopic) openTopic(d, d.activeTopic, true);
       else say(d, script.simplerNone);
@@ -733,8 +828,9 @@ export function reduce(state: ConversationState, turn: CustomerTurn): Conversati
       const r = event.response;
       const sources = validateSourceIds(r.sourceIds);
       cite(d, sources);
-      say(d, r.reply, undefined, { ai: true, ...(sources.length ? { sources } : {}) });
-      d.suggestions = (r.suggestions ?? []).filter((s) => typeof s === 'string' && s.trim()).slice(0, 4);
+      // Replies written with account details available may repeat them: flag so they can't bypass a later permission change.
+      say(d, r.reply, undefined, { ai: true, ...(sources.length ? { sources } : {}), ...(mem(d).permission === 'granted' ? { accountDetail: true } : {}) });
+      d.suggestions = cleanSuggestions(r.suggestions, latestCustomerText(d));
       applyAiEffects(d, r.effects ?? []);
       break;
     }
@@ -745,11 +841,4 @@ export function reduce(state: ConversationState, turn: CustomerTurn): Conversati
   }
 
   return d;
-}
-
-/** Topics to suggest next, based on the goal and what's been covered. */
-export function suggestedTopics(state: ConversationState, max = 3): TopicId[] {
-  const seeds = state.activeTopic ? TOPICS[state.activeTopic].related : [];
-  const goalTopics = TOPICS_FOR_GOAL[state.memory.goal?.type ?? 'understand_options'] ?? [];
-  return [...seeds, ...goalTopics].filter((t, i, arr) => arr.indexOf(t) === i && !state.memory.topicsExplored.includes(t)).slice(0, max);
 }

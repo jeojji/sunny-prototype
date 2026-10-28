@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
@@ -110,7 +110,31 @@ describe('scripted demo: the proactive loop', () => {
   }, 30000);
 });
 
+describe('header', () => {
+  it('has no feedback control', () => {
+    render(<App status={noAi} />);
+    expect(screen.queryByText(/Give feedback/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /feedback/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Demo settings/ })).toBeInTheDocument();
+  });
+});
+
 describe('live AI mode (mocked API)', () => {
+  it('keeps “Explore other topics” and fallback suggestions when the model returns none', async () => {
+    const user = userEvent.setup();
+    const chat = vi.fn(async (): Promise<ChatResponse> => ({ reply: 'A GIC returns your principal at the end of a term.', sourceIds: ['cdic-gic'], suggestions: [], effects: [] }));
+    render(<App status={aiOn} chat={chat} />);
+    await user.click(await screen.findByRole('button', { name: 'Ask Sunny' }));
+    await user.type(screen.getByLabelText('Message Sunny'), 'What is a GIC?{Enter}');
+    await screen.findByText(/returns your principal/, {}, SLOW);
+    const group = screen.getByRole('group', { name: 'Suggested replies' });
+    expect(within(group).getAllByRole('button').length).toBeGreaterThanOrEqual(3);
+    await user.click(screen.getByRole('button', { name: 'Explore other topics' }));
+    const menu = screen.getByRole('group', { name: 'Other topics' });
+    await user.click(within(menu).getByRole('button', { name: 'Browse all Tangerine offerings' }));
+    await waitFor(() => expect(chat).toHaveBeenCalledTimes(2));
+  }, 30000);
+
   it('asks permission before account details reach the model', async () => {
     const user = userEvent.setup();
     const requests: ChatRequest[] = [];
